@@ -1,0 +1,120 @@
+Edition: 3.0.0
+Type: Project
+Name: sync-oss-bucket
+Version: 0.0.5
+Provider:
+  - 阿里云
+Description: 将一个 OSS Bucket 中的内容同步到另一个 OSS Bucket
+HomePage: https://github.com/devsapp/sync-oss-bucket
+Tags:
+  - OSS
+Category: 其它
+Service:
+  函数计算:
+    Authorities:
+      - AliyunFCFullAccess
+Organization: 阿里云函数计算（FC）
+Effective: Public
+Parameters:
+  type: object
+  additionalProperties: false
+  required:
+    - sourceRegion
+    - sourceBucket
+    - destinationRegion
+    - destinationBucket
+    - managerFunctionName
+    - workerFunctionName
+    - role
+  properties:
+    sourceRegion:
+      title: 源OSS所在地域
+      type: string
+      default: ""
+      description: 源OSS存储桶所在地域
+      x-region: all
+      enum:
+        - cn-beijing
+        - cn-hangzhou
+        - cn-shanghai
+        - cn-qingdao
+        - cn-zhangjiakou
+        - cn-huhehaote
+        - cn-shenzhen
+        - cn-chengdu
+        - cn-hongkong
+        - ap-southeast-1
+        - ap-southeast-3
+        - ap-southeast-5
+        - ap-southeast-7
+        - ap-northeast-1
+        - ap-northeast-2
+        - eu-central-1
+        - eu-west-1
+        - us-west-1
+        - us-east-1
+    sourceBucket:
+      title: 源OSS存储桶名
+      type: string
+      default: ""
+      description: 源OSS存储桶名
+      x-bucket:
+        dependency:
+          - sourceRegion
+    destinationRegion:
+      title: 目标OSS所在地域
+      type: string
+      default: ""
+      description: 目标OSS存储桶所在地域
+      x-region: all
+      enum:
+        - cn-beijing
+        - cn-hangzhou
+        - cn-shanghai
+        - cn-qingdao
+        - cn-zhangjiakou
+        - cn-huhehaote
+        - cn-shenzhen
+        - cn-chengdu
+        - cn-hongkong
+        - ap-southeast-1
+        - ap-southeast-3
+        - ap-southeast-5
+        - ap-southeast-7
+        - ap-northeast-1
+        - ap-northeast-2
+        - eu-central-1
+        - eu-west-1
+        - us-west-1
+        - us-east-1
+    destinationBucket:
+      title: 目标OSS存储桶名
+      type: string
+      default: ""
+      description: 目标OSS存储桶名
+      x-bucket:
+        dependency:
+          - destinationRegion
+    managerFunctionName:
+      title: Manager 函数名
+      type: string
+      default: sync-oss-manager-${default-suffix}
+      description: Manager 函数名
+    workerFunctionName:
+      title: Worker 函数的名称
+      type: string
+      default: sync-oss-worker-${default-suffix}
+      description: Worker 函数的名称
+    role:
+      title: RAM 角色
+      type: string
+      default: ""
+      description: 我们会用此角色生成临时密钥来访问 OSS 和 FC。
+      x-role:
+        type: object
+        pattern: "^acs:ram::[0-9]*:role/.*$"
+        service: fc
+        description: 我们会用此角色生成临时密钥来访问 OSS 和 FC。
+        authorities:
+          - AliyunOSSFullAccess
+          - AliyunFCInvocationAccess

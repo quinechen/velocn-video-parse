@@ -1,0 +1,60 @@
+# ------------------------------------
+#   官方手册: https://manual.serverless-devs.com/user-guide/aliyun/#fc3
+#   常见小贴士: https://manual.serverless-devs.com/user-guide/tips/
+#   有问题快来钉钉群问一下吧：33947367
+# ------------------------------------
+edition: 3.0.0
+name: hello-world-app
+access: "{{ access }}"
+
+vars: # 全局变量
+  region: "cn-hangzhou"
+
+resources:
+  hello_world:
+    component: fc3 
+    actions:    
+      pre-${regex('deploy|local')}:
+        - run: make video-parse
+    props:
+      region: ${vars.region} 
+      functionName: "velocn-video-parse-function"
+      runtime: "custom"
+      description: 'video-parse task'
+      timeout: 10
+      memorySize: 2048
+      cpu: 2
+      diskSize: 10240
+      code: ./code/target
+      # 配置目标 OSS bucket（处理结果上传的目标）
+      environmentVariables:
+        # DEBUG 模式：设置为 true 时，函数直接返回成功，跳过实际处理
+        # 用于测试事件触发逻辑和部署是否正确
+        DEBUG: "true"
+        # 目标 bucket 名称（必需）
+        DESTINATION_BUCKET: "your-destination-bucket"
+        # 目标 bucket 所在区域（必需，如：cn-hangzhou）
+        DESTINATION_REGION: "cn-hangzhou"
+        # 目标路径前缀（可选，默认为源文件的目录路径）
+        # DESTINATION_PREFIX: "processed"
+      # 配置 FFmpeg 层（可选）
+      # 使用前需要先构建层：./build-layer.sh
+      layers:
+        - layerName: ffmpeg-layer
+          code: ./layers/ffmpeg-layer.tar.gz
+      customRuntimeConfig:
+        command:
+          - '/code/main'
+          - 'serve'
+        port: 9000
+      # triggers:
+      #   - triggerName: httpTrigger # 触发器名称
+      #     triggerType: http # 触发器类型
+      #     description: 'xxxx'
+      #     qualifier: LATEST # 触发服务的版本
+      #     triggerConfig:
+      #       authType: anonymous # 鉴权类型，可选值：anonymous、function
+      #       disableURLInternet: false # 是否禁用公网访问 URL
+      #       methods: # HTTP 触发器支持的访问方法，可选值：GET、POST、PUT、DELETE、HEAD
+      #         - GET
+      #         - POST

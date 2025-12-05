@@ -1,0 +1,63 @@
+edition: 3.0.0
+name: sync-oss-bucket
+access: "{{ access }}"
+vars:
+  sourceRegion: "{{ sourceRegion }}"
+  sourceBucket: "{{ sourceBucket }}"
+  destinationRegion: "{{ destinationRegion }}"
+  destinationBucket: "{{ destinationBucket }}"
+  managerFunctionName: "{{ managerFunctionName }}"
+  workerFunctionName: "{{ workerFunctionName }}"
+  role: "{{ role }}"
+resources:
+  manager:
+    component: fc3
+    actions:
+      pre-deploy:
+        - run: export PATH=/usr/local/versions/node/v20.8.1/bin:$PATH && npm install
+          path: ./sync-manager
+    props:
+      region: ${vars.destinationRegion}
+      handler: index.handler
+      role: ${vars.role}
+      timeout: 900
+      cpu: 0.35
+      memorySize: 512
+      diskSize: 512
+      internetAccess: true
+      functionName: ${vars.managerFunctionName}
+      environmentVariables:
+        SOURCE_REGION: ${vars.sourceRegion}
+        SOURCE_BUCKET: ${vars.sourceBucket}
+        WORKER_FUNCTION_NAME: ${vars.workerFunctionName}
+      runtime: nodejs20
+      code: ./sync-manager
+      instanceLifecycleConfig:
+        initializer:
+          handler: index.initialize
+          timeout: 10
+  worker:
+    component: fc3
+    props:
+      region: ${vars.destinationRegion}
+      handler: index.handler
+      role: ${vars.role}
+      timeout: 900
+      cpu: 0.35
+      memorySize: 512
+      diskSize: 10240
+      internetAccess: true
+      functionName: ${vars.workerFunctionName}
+      environmentVariables:
+        DESTINATION_REGION: ${vars.destinationRegion}
+        DESTINATION_BUCKET: ${vars.destinationBucket}
+      runtime: nodejs20
+      code: ./sync-worker
+      instanceLifecycleConfig:
+        initializer:
+          handler: index.initialize
+          timeout: 10
+      asyncInvokeConfig:
+        asyncTask: true
+        maxAsyncEventAgeInSeconds: 86400
+        maxAsyncRetryAttempts: 3

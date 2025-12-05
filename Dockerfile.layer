@@ -1,0 +1,99 @@
+# 函数计算层 Dockerfile
+# 用于构建包含 FFmpeg 及相关运行时库的层
+# 参考: https://help.aliyun.com/zh/functioncompute/fc-3-0/user-guide/use-a-dockerfile-to-build-a-layer-1
+#
+# 构建命令:
+#   docker build -f Dockerfile.layer -t ffmpeg-layer .
+#   docker run --rm ffmpeg-layer tar czf /tmp/ffmpeg-layer.tar.gz -C /opt .
+#
+# 在 s.yaml 中使用层:
+#   layers:
+#     - layerName: ffmpeg-layer
+#       code: ./layers/ffmpeg-layer.tar.gz
+
+FROM debian:bookworm-slim
+
+# 设置工作目录为 /opt（函数计算层的标准路径）
+WORKDIR /opt
+
+# 安装 FFmpeg 及其运行时依赖
+# 注意：函数计算层只需要运行时库，不需要开发库
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ffmpeg \
+        # FFmpeg 运行时库
+        libavcodec59 \
+        libavformat59 \
+        libavutil57 \
+        libavfilter8 \
+        libavdevice59 \
+        libswscale6 \
+        libswresample4 \
+        # FFmpeg 的依赖库
+        libx264-164 \
+        libx265-199 \
+        libvpx7 \
+        libmp3lame0 \
+        libopus0 \
+        libvorbis0a \
+        libvorbisenc2 \
+        libtheora0 \
+        libxvidcore4 \
+        libxcb-shm0 \
+        libxcb-xfixes0 \
+        libxcb1 \
+        libvdpau1 \
+        libva2 \
+        libva-drm2 \
+        libva-x11-2 \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# 创建目录结构
+RUN mkdir -p /opt/bin /opt/lib
+
+# 复制 FFmpeg 二进制文件到 /opt/bin
+RUN cp /usr/bin/ffmpeg /opt/bin/ && \
+    cp /usr/bin/ffprobe /opt/bin/ 2>/dev/null || true && \
+    chmod +x /opt/bin/*
+
+# 复制 FFmpeg 库文件到 /opt/lib
+# 首先复制 FFmpeg 核心库
+RUN cp -L /usr/lib/x86_64-linux-gnu/libav*.so.* /opt/lib/ 2>/dev/null || true && \
+    cp -L /usr/lib/x86_64-linux-gnu/libsw*.so.* /opt/lib/ 2>/dev/null || true && \
+    cp -L /usr/lib/x86_64-linux-gnu/libpostproc*.so.* /opt/lib/ 2>/dev/null || true && \
+    # 使用 ldd 查找并复制所有运行时依赖库
+    ldd /usr/bin/ffmpeg | \
+    grep "=> /usr/lib" | \
+    awk '{print $3}' | \
+    xargs -I '{}' cp -L '{}' /opt/lib/ 2>/dev/null || true && \
+    # 复制系统库依赖（如果需要）
+    ldd /usr/bin/ffmpeg | \
+    grep "=> /lib" | \
+    awk '{print $3}' | \
+    xargs -I '{}' cp -L '{}' /opt/lib/ 2>/dev/null || true
+
+# 创建符号链接（如果需要）
+RUN cd /opt/lib && \
+    for lib in libav*.so.* libsw*.so.* libpostproc*.so.*; do \
+        if [ -f "$lib" ]; then \
+            base=$(echo "$lib" | sed 's/\.[0-9].*//'); \
+            ln -sf "$lib" "$base.so" 2>/dev/null || true; \
+        fi \
+    done
+
+# 验证安装
+RUN echo "=== FFmpeg 版本信息 ===" && \
+    /opt/bin/ffmpeg -version && \
+    echo "" && \
+    echo "=== 二进制文件 ===" && \
+    ls -lh /opt/bin/ && \
+    echo "" && \
+    echo "=== 库文件数量 ===" && \
+    ls -1 /opt/lib/ | wc -l && \
+    echo "" && \
+    echo "=== 主要库文件 ===" && \
+    ls -lh /opt/lib/libav*.so.* /opt/lib/libsw*.so.* 2>/dev/null | head -10
+
+# 设置默认命令（用于验证层内容）
+CMD ["/bin/bash", "-c", "echo 'FFmpeg layer built successfully'; /opt/bin/ffmpeg -version"]
