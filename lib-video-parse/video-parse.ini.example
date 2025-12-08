@@ -1,0 +1,29 @@
+# 视频处理配置文件示例
+# 复制此文件为 video-parse.ini 或 .video-parse.ini 以使用
+
+[video_parse]
+# 场景变化检测阈值 (0.0-1.0)
+# 值越大，场景变化检测越敏感
+# 默认值: 0.35
+threshold = 0.35
+
+# 最小场景持续时间（秒）
+# 小于此持续时间的场景将被忽略
+# 默认值: 0.8
+min_scene_duration = 0.8
+
+# 帧采样率（每秒采样多少帧用于分析）
+# 值越大，处理越精确但速度越慢
+# 默认值: 0.5
+sample_rate = 0.5
+
+# Webhook 回调 URL（可选）
+# 处理完成后会向此 URL 发送 POST 请求，包含处理结果信息
+# 格式: JSON POST 请求
+# 示例: https://your-api.com/webhook/video-processed
+# 默认值: 空（不启用）
+webhook_url =
+
+
+
+

@@ -207,17 +207,15 @@ impl OssClient {
         }
 
         // 构建 endpoint（优先使用 internal endpoint）
-        let ep = endpoint.unwrap_or_else(|| {
+        let ep: String = endpoint.map(|s| s.to_string()).unwrap_or_else(|| {
             std::env::var("OSS_ENDPOINT")
-                .ok()
-                .as_deref()
-                .unwrap_or("oss-cn-hangzhou.aliyuncs.com")
+                .unwrap_or_else(|_| "oss-cn-hangzhou.aliyuncs.com".to_string())
         });
 
         tracing::info!("正在从 OSS 下载文件: bucket={}, key={}, endpoint={}", bucket, object_key, ep);
 
         // 构建 URL
-        let url = self.build_url(bucket, object_key, ep);
+        let url = self.build_url(bucket, object_key, &ep);
 
         // 构建签名请求头
         let headers = self.build_signed_headers("GET", bucket, object_key, None)?;
@@ -268,11 +266,9 @@ impl OssClient {
         }
 
         // 构建 endpoint（优先使用 internal endpoint）
-        let ep = endpoint.unwrap_or_else(|| {
+        let ep: String = endpoint.map(|s| s.to_string()).unwrap_or_else(|| {
             std::env::var("OSS_ENDPOINT")
-                .ok()
-                .as_deref()
-                .unwrap_or("oss-cn-hangzhou.aliyuncs.com")
+                .unwrap_or_else(|_| "oss-cn-hangzhou.aliyuncs.com".to_string())
         });
 
         tracing::info!("正在上传文件到 OSS: {} -> bucket={}, key={}, endpoint={}", 
@@ -286,7 +282,7 @@ impl OssClient {
         let content_type = self.guess_content_type(object_key);
 
         // 构建 URL
-        let url = self.build_url(bucket, object_key, ep);
+        let url = self.build_url(bucket, object_key, &ep);
 
         // 构建签名请求头
         let headers = self.build_signed_headers("PUT", bucket, object_key, Some(content_type))?;
@@ -329,17 +325,15 @@ impl OssClient {
         endpoint: Option<&str>,
     ) -> Result<Option<String>> {
         // 构建 endpoint
-        let ep = endpoint.unwrap_or_else(|| {
+        let ep: String = endpoint.map(|s| s.to_string()).unwrap_or_else(|| {
             std::env::var("OSS_ENDPOINT")
-                .ok()
-                .as_deref()
-                .unwrap_or("oss-cn-hangzhou.aliyuncs.com")
+                .unwrap_or_else(|_| "oss-cn-hangzhou.aliyuncs.com".to_string())
         });
 
         tracing::debug!("检查 OSS 对象: bucket={}, key={}, endpoint={}", bucket, object_key, ep);
 
         // 构建 URL
-        let url = self.build_url(bucket, object_key, ep);
+        let url = self.build_url(bucket, object_key, &ep);
 
         // 构建签名请求头
         let headers = self.build_signed_headers("HEAD", bucket, object_key, None)?;

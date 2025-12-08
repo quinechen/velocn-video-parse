@@ -89,9 +89,9 @@ docker build -f Dockerfile.build -t video-parse-builder .
 
 # 复制二进制文件
 docker create --name temp-container video-parse-builder
-docker cp temp-container:/workspace/target/release/video-parse ./code/target/main
+docker cp temp-container:/workspace/target/release/video-parse ./dist/main
 docker rm temp-container
-chmod +x ./code/target/main
+chmod +x ./dist/main
 ```
 
 ### 方案 3：使用 Makefile 的 Docker 编译目标
@@ -158,10 +158,10 @@ make video-parse
 
 ```bash
 # 检查文件是否存在
-ls -lh code/target/main
+ls -lh dist/main
 
 # 检查文件类型
-file code/target/main
+file dist/main
 
 # 应该显示：ELF 64-bit LSB executable, x86-64
 ```

@@ -1,10 +1,11 @@
 use axum::{
-    extract::Json,
+    extract::{Json, Query},
     http::StatusCode,
     response::Json as ResponseJson,
 };
 use std::path::PathBuf;
-use crate::{OssEvent, ProcessResponse, ProcessResult, OssClient, ProcessConfig, process_video};
+use serde::{Deserialize, Serialize};
+use crate::{OssEvent, ProcessResponse, ProcessResult, OssClient, ProcessConfig, process_video, config::ConfigLoader};
 use tracing::{info, error};
 
 /// 处理 OSS Event 的 Handler
@@ -103,7 +104,8 @@ pub async fn handle_oss_event(
     let oss_client = OssClient::new()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("创建 OSS 客户端失败: {}", e)))?;
     
-    let video_filename = PathBuf::from(&object_key)
+    let video_path_buf = PathBuf::from(&object_key);
+    let video_filename = video_path_buf
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("video.mp4");
@@ -126,8 +128,9 @@ pub async fn handle_oss_event(
     // 创建输出目录
     let output_dir = temp_dir.join("output");
     
-    // 处理视频
-    let config = ProcessConfig::default();
+    // 处理视频：从环境变量和配置文件加载配置
+    let config = ConfigLoader::load_config(None, None, None, None, None)
+        .unwrap_or_else(|_| ProcessConfig::default());
     let process_result = process_video(&downloaded_path, &output_dir, config)
         .await
         .map_err(|e| {
@@ -302,4 +305,181 @@ pub async fn handle_oss_event(
 /// 健康检查 Handler
 pub async fn health_check() -> &'static str {
     "OK"
+}
+
+/// 直接处理请求（支持本地文件路径或OSS事件）
+#[derive(Debug, Deserialize)]
+pub struct DirectProcessRequest {
+    /// 视频文件路径（本地路径或OSS路径）
+    pub input: String,
+    /// 输出目录（可选，默认使用临时目录）
+    pub output: Option<String>,
+    /// 场景变化检测阈值
+    pub threshold: Option<f64>,
+    /// 最小场景持续时间（秒）
+    pub min_scene_duration: Option<f64>,
+    /// 帧采样率
+    pub sample_rate: Option<f64>,
+    /// 是否为OSS路径（如果为true，会从OSS下载）
+    pub is_oss_path: Option<bool>,
+    /// OSS bucket（如果is_oss_path为true，需要提供）
+    pub oss_bucket: Option<String>,
+    /// OSS region（如果is_oss_path为true，需要提供）
+    pub oss_region: Option<String>,
+}
+
+/// 直接处理视频的 Handler（支持本地文件和OSS文件）
+pub async fn handle_direct_process(
+    Json(request): Json<DirectProcessRequest>,
+) -> Result<ResponseJson<ProcessResponse>, (StatusCode, String)> {
+    info!("收到直接处理请求: {:?}", request);
+    
+    // 确定输入文件路径
+    let input_path = if request.is_oss_path.unwrap_or(false) {
+        // OSS路径，需要下载
+        let bucket = request.oss_bucket.ok_or_else(|| {
+            (StatusCode::BAD_REQUEST, "OSS路径需要提供 oss_bucket".to_string())
+        })?;
+        let region = request.oss_region.ok_or_else(|| {
+            (StatusCode::BAD_REQUEST, "OSS路径需要提供 oss_region".to_string())
+        })?;
+        
+        // 创建临时目录
+        let request_id = std::env::var("FC_REQUEST_ID")
+            .unwrap_or_else(|_| {
+                format!("{}_{}", 
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                    uuid::Uuid::new_v4().to_string()
+                )
+            });
+        let temp_dir = std::env::temp_dir().join("video-parse").join(&request_id);
+        std::fs::create_dir_all(&temp_dir)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("创建临时目录失败: {}", e)))?;
+        
+        // 下载文件
+        let oss_client = OssClient::new()
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("创建 OSS 客户端失败: {}", e)))?;
+        
+        let input_path_buf = PathBuf::from(&request.input);
+        let video_filename = input_path_buf
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("video.mp4");
+        let video_path = temp_dir.join(video_filename);
+        
+        let endpoint = format!("oss-{}-internal.aliyuncs.com", region);
+        
+        oss_client
+            .download_file(&bucket, &request.input, Some(&endpoint), &video_path)
+            .await
+            .map_err(|e| {
+                error!("下载文件失败: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, format!("下载文件失败: {}", e))
+            })?;
+        
+        video_path
+    } else {
+        // 本地路径
+        PathBuf::from(&request.input)
+    };
+    
+    // 检查文件是否存在
+    if !input_path.exists() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!("视频文件不存在: {}", input_path.display()),
+        ));
+    }
+    
+    // 确定输出目录
+    let output_dir = if let Some(output) = request.output {
+        PathBuf::from(output)
+    } else {
+        // 使用临时目录
+        let request_id = std::env::var("FC_REQUEST_ID")
+            .unwrap_or_else(|_| {
+                format!("{}_{}", 
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                    uuid::Uuid::new_v4().to_string()
+                )
+            });
+        std::env::temp_dir().join("video-parse").join(&request_id).join("output")
+    };
+    
+    // 创建输出目录
+    std::fs::create_dir_all(&output_dir)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("创建输出目录失败: {}", e)))?;
+    
+    // 构建配置：优先级为 请求参数 > 环境变量 > 配置文件 > 默认值
+    let config = ConfigLoader::load_config(
+        None,
+        request.threshold,
+        request.min_scene_duration,
+        request.sample_rate,
+        None, // webhook_url 从配置文件或环境变量读取
+    )
+    .unwrap_or_else(|_| ProcessConfig::default());
+    
+    // 处理视频
+    let process_result = process_video(&input_path, &output_dir, config)
+        .await
+        .map_err(|e| {
+            error!("处理视频失败: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("处理视频失败: {}", e))
+        })?;
+    
+    // 构建响应
+    let response = ProcessResponse {
+        success: true,
+        message: format!(
+            "成功处理视频，检测到 {} 个场景",
+            process_result.metadata.scene_count
+        ),
+        result: Some(ProcessResult {
+            video_file: input_path.to_string_lossy().to_string(),
+            output_dir: output_dir.to_string_lossy().to_string(),
+            scene_count: process_result.metadata.scene_count,
+            keyframes: process_result.keyframe_files,
+            audio_file: process_result.audio_file,
+            metadata_file: "metadata.json".to_string(),
+        }),
+    };
+    
+    info!("处理完成: {:?}", response);
+    
+    Ok(ResponseJson(response))
+}
+
+/// 处理视频的查询参数版本（用于GET请求，方便测试）
+#[derive(Debug, Deserialize)]
+pub struct ProcessQueryParams {
+    pub input: String,
+    pub output: Option<String>,
+    pub threshold: Option<f64>,
+    pub min_scene_duration: Option<f64>,
+    pub sample_rate: Option<f64>,
+}
+
+/// 通过查询参数处理视频（GET请求，方便测试）
+pub async fn handle_process_query(
+    Query(params): Query<ProcessQueryParams>,
+) -> Result<ResponseJson<ProcessResponse>, (StatusCode, String)> {
+    let request = DirectProcessRequest {
+        input: params.input,
+        output: params.output,
+        threshold: params.threshold,
+        min_scene_duration: params.min_scene_duration,
+        sample_rate: params.sample_rate,
+        is_oss_path: Some(false),
+        oss_bucket: None,
+        oss_region: None,
+    };
+    
+    handle_direct_process(Json(request)).await
 }

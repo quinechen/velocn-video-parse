@@ -1,14 +1,14 @@
 # Rust 编译产物
-code/target/
-video-parse/target/
+dist/
+lib-video-parse/target/
+lib-video-parse/dist/
 
 # 函数计算层构建产物
 layers/
 *.tar.gz
 
-# Go 文件（已不再使用）
-code/main.go
-code/go.mod
+# 脚本产出物
+lib-video-parse/scripts/optimize_results.json
 
 # IDE 文件
 .idea/
@@ -20,3 +20,6 @@ code/go.mod
 # 系统文件
 .DS_Store
 Thumbs.db
+
+# 测试和调试文件
+debug/

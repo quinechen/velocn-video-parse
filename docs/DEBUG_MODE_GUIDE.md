@@ -267,7 +267,7 @@ resources:
       memorySize: 2048
       cpu: 2
       diskSize: 10240
-      code: ./code/target
+      code: ./dist
       environmentVariables:
         # DEBUG 模式：设置为 true 启用测试模式
         DEBUG: "false"  # 生产环境设置为 false

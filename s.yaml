@@ -4,28 +4,32 @@
 #   有问题快来钉钉群问一下吧：33947367
 # ------------------------------------
 edition: 3.0.0
-name: hello-world-app
-access: "{{ access }}"
+name: velocn-video-parse-app
 
 vars: # 全局变量
   region: "cn-hangzhou"
+  # 容器镜像服务命名空间（需要根据实际情况修改）
+  namespace: "dockerhacker"
 
 resources:
   hello_world:
     component: fc3 
     actions:    
       pre-${regex('deploy|local')}:
-        - run: make video-parse
+        - run: make build-image
     props:
       region: ${vars.region} 
       functionName: "velocn-video-parse-function"
-      runtime: "custom"
+      runtime: "custom-container"
       description: 'video-parse task'
       timeout: 10
       memorySize: 2048
       cpu: 2
       diskSize: 10240
-      code: ./code/target
+      # 使用容器镜像（替换原来的 code 和 customRuntimeConfig）
+      # 镜像地址格式：registry.cn-hangzhou.aliyuncs.com/<namespace>/video-parse:latest
+      # 部署前需要先构建并推送镜像到容器镜像服务
+      image: registry.cn-hangzhou.aliyuncs.com/${vars.namespace}/video-parse:latest
       # 配置目标 OSS bucket（处理结果上传的目标）
       environmentVariables:
         # DEBUG 模式：设置为 true 时，函数直接返回成功，跳过实际处理
@@ -37,16 +41,7 @@ resources:
         DESTINATION_REGION: "cn-hangzhou"
         # 目标路径前缀（可选，默认为源文件的目录路径）
         # DESTINATION_PREFIX: "processed"
-      # 配置 FFmpeg 层（可选）
-      # 使用前需要先构建层：./build-layer.sh
-      layers:
-        - layerName: ffmpeg-layer
-          code: ./layers/ffmpeg-layer.tar.gz
-      customRuntimeConfig:
-        command:
-          - '/code/main'
-          - 'serve'
-        port: 9000
+      # 注意：使用容器镜像后，不再需要 layers（FFmpeg 已包含在镜像中）
       # triggers:
       #   - triggerName: httpTrigger # 触发器名称
       #     triggerType: http # 触发器类型

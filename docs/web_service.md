@@ -28,7 +28,7 @@ curl http://localhost:8080/health
 ```bash
 curl -X POST http://localhost:8080/process \
   -H "Content-Type: application/json" \
-  -d @examples/oss_event_example.json
+  -d @debug/examples/oss_event_example.json
 ```
 
 ## 部署到阿里云函数计算
@@ -78,7 +78,7 @@ cd ..
 
 处理 OSS event，自动下载并处理视频。
 
-**请求体**：OSS Event JSON（见 `examples/oss_event_example.json`）
+**请求体**：OSS Event JSON（见 `debug/examples/oss_event_example.json`）
 
 **响应**：
 

@@ -51,7 +51,7 @@ environmentVariables:
 - ✅ **跳过**视频下载、处理、上传
 - ✅ 直接返回成功响应
 
-**详细说明**：请参考 [DEBUG_MODE_GUIDE.md](DEBUG_MODE_GUIDE.md)
+**详细说明**：请参考 [debug_mode_guide.md](debug_mode_guide.md)
 
 ### 2. 配置 OSS 触发器
 
@@ -344,7 +344,7 @@ layers:
      DEBUG: "false"  # 或注释掉
    ```
 
-详细说明请参考：[DEBUG_MODE_GUIDE.md](DEBUG_MODE_GUIDE.md)
+详细说明请参考：[debug_mode_guide.md](debug_mode_guide.md)
 
 ### 2. 本地测试
 
@@ -355,7 +355,7 @@ cargo run --release -- serve
 # 发送测试事件
 curl -X POST http://localhost:9000/process \
   -H "Content-Type: application/json" \
-  -d @video-parse/examples/oss_event_example.json
+  -d @debug/examples/oss_event_example.json
 ```
 
 ### 3. 函数计算完整测试
@@ -437,7 +437,7 @@ resources:
       memorySize: 2048
       cpu: 2
       diskSize: 10240
-      code: ./code/target
+      code: ./dist
       layers:
         - layerName: ffmpeg-layer
           code: ./layers/ffmpeg-layer.tar.gz

@@ -6,6 +6,7 @@ pub mod oss_event;
 pub mod oss_client;
 pub mod processor;
 pub mod handler;
+pub mod config;
 
 pub use video_processor::VideoProcessor;
 pub use scene_detector::SceneDetector;
