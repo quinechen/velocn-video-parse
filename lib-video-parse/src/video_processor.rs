@@ -89,11 +89,10 @@ impl VideoProcessor {
             ).context("无法创建解码器上下文")?)
         };
         
-        let mut decoder_context = create_decoder_context()?;
+        let decoder_context = create_decoder_context()?;
         
         // 禁用硬件加速，直接使用软件解码
         // 硬件加速在某些情况下不稳定，特别是使用 seek 的场景
-        let is_hw_decoding = false;
         
         let mut decoder = decoder_context.decoder()
             .video()

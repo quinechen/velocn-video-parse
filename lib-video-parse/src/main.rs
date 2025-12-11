@@ -102,17 +102,40 @@ async fn main() -> Result<()> {
 
 async fn start_web_server(bind: &str) -> Result<()> {
     use axum::{
-        routing::{get, post},
+        routing::{get, post, put, delete, patch, head, options, MethodRouter},
         Router,
     };
     use tower_http::cors::CorsLayer;
     use video_parse::handler;
 
+    // 创建接受任何HTTP方法的路由
+    let invoke_route = MethodRouter::new()
+        .get(handler::handle_invoke)
+        .post(handler::handle_invoke)
+        .put(handler::handle_invoke)
+        .delete(handler::handle_invoke)
+        .patch(handler::handle_invoke)
+        .head(handler::handle_invoke)
+        .options(handler::handle_invoke);
+    
+    let process_any_route = MethodRouter::new()
+        .get(handler::handle_oss_event_any)
+        .post(handler::handle_oss_event_any)
+        .put(handler::handle_oss_event_any)
+        .delete(handler::handle_oss_event_any)
+        .patch(handler::handle_oss_event_any)
+        .head(handler::handle_oss_event_any)
+        .options(handler::handle_oss_event_any);
+
     let app = Router::new()
         .route("/", get(handler::health_check))
         .route("/health", get(handler::health_check))
-        // OSS事件处理端点（函数计算模式）
-        .route("/process", post(handler::handle_oss_event))
+        // 函数计算初始化端点
+        .route("/initialize", post(handler::handle_initialize))
+        // 函数计算调用端点（接受任何HTTP方法）
+        .route("/invoke", invoke_route)
+        // OSS事件处理端点（函数计算模式，接受任何HTTP方法以兼容不同调用方式）
+        .route("/process", process_any_route)
         // 直接处理端点（支持本地文件和OSS文件）
         .route("/process/direct", post(handler::handle_direct_process))
         // 查询参数处理端点（GET请求，方便测试）
@@ -127,7 +150,9 @@ async fn start_web_server(bind: &str) -> Result<()> {
     tracing::info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     tracing::info!("可用端点:");
     tracing::info!("  • 健康检查: GET  http://{}/health", bind);
-    tracing::info!("  • OSS事件处理: POST http://{}/process", bind);
+    tracing::info!("  • 函数计算初始化: POST http://{}/initialize", bind);
+    tracing::info!("  • 函数计算调用: ANY http://{}/invoke", bind);
+    tracing::info!("  • OSS事件处理: ANY http://{}/process", bind);
     tracing::info!("  • 直接处理: POST http://{}/process/direct", bind);
     tracing::info!("  • 查询处理: GET  http://{}/process/query?input=<path>", bind);
     tracing::info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");

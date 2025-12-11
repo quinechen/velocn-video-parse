@@ -253,7 +253,6 @@ impl SceneDetector {
         let mut hue_diff_sum = 0.0;
         let mut sat_diff_sum = 0.0;
         let mut val_diff_sum = 0.0;
-        let total_pixels = width * height;
         
         // 采样计算（每4个像素采样一次，提高性能）
         for y in (0..height).step_by(2) {
