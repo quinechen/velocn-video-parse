@@ -5,31 +5,38 @@
 # ------------------------------------
 edition: 3.0.0
 name: velocn-video-parse-app
+access: default
 
 vars: # 全局变量
   region: "cn-hangzhou"
   # 容器镜像服务命名空间（需要根据实际情况修改）
   namespace: "dockerhacker"
+  accountId: "1015382456283553"
+  bucket: "velocn-video-parse-bucket"
 
 resources:
-  hello_world:
+  velocn-video-parse-function:
     component: fc3 
     actions:    
       pre-${regex('deploy|local')}:
-        - run: make build-image
+        - run: make build-image && make push-image
     props:
       region: ${vars.region} 
       functionName: "velocn-video-parse-function"
       runtime: "custom-container"
+      role: AliyunFcDefaultRole
+      internetAccess: true
       description: 'video-parse task'
       timeout: 10
       memorySize: 2048
       cpu: 2
       diskSize: 10240
-      # 使用容器镜像（替换原来的 code 和 customRuntimeConfig）
-      # 镜像地址格式：registry.cn-hangzhou.aliyuncs.com/<namespace>/video-parse:latest
-      # 部署前需要先构建并推送镜像到容器镜像服务
-      image: registry.cn-hangzhou.aliyuncs.com/${vars.namespace}/video-parse:latest
+      customContainerConfig:
+        image: registry.cn-hangzhou.aliyuncs.com/${vars.namespace}/video-parse:latest
+        port: 9000
+        command:
+          - '/code/main'
+          - 'serve'
       # 配置目标 OSS bucket（处理结果上传的目标）
       environmentVariables:
         # DEBUG 模式：设置为 true 时，函数直接返回成功，跳过实际处理
@@ -42,14 +49,24 @@ resources:
         # 目标路径前缀（可选，默认为源文件的目录路径）
         # DESTINATION_PREFIX: "processed"
       # 注意：使用容器镜像后，不再需要 layers（FFmpeg 已包含在镜像中）
-      # triggers:
-      #   - triggerName: httpTrigger # 触发器名称
-      #     triggerType: http # 触发器类型
-      #     description: 'xxxx'
-      #     qualifier: LATEST # 触发服务的版本
-      #     triggerConfig:
-      #       authType: anonymous # 鉴权类型，可选值：anonymous、function
-      #       disableURLInternet: false # 是否禁用公网访问 URL
-      #       methods: # HTTP 触发器支持的访问方法，可选值：GET、POST、PUT、DELETE、HEAD
-      #         - GET
-      #         - POST
+      triggers:
+        - triggerName: httpTrigger # 触发器名称
+          triggerType: http # 触发器类型
+          description: 'http trigger'
+          qualifier: LATEST # 触发服务的版本
+          triggerConfig:
+            authType: anonymous # 鉴权类型，可选值：anonymous、function
+            disableURLInternet: false # 是否禁用公网访问 URL
+            methods: # HTTP 触发器支持的访问方法，可选值：GET、POST、PUT、DELETE、HEAD
+              - GET
+              - POST
+              - OPTIONS
+        - triggerName: ossTrigger # 触发器名称
+          triggerType: oss # 触发器类型
+          description: 'oss trigger'
+          sourceArn: acs:oss:${vars.region}:${vars.accountId}:${vars.bucket}
+          qualifier: LATEST # 触发服务的版本
+          triggerConfig:
+            events:
+              - oss:ObjectCreated:PutObject
+              - oss:ObjectCreated:PostObject

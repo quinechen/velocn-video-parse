@@ -18,7 +18,7 @@ DOCKER_TAG := latest
 # 格式：registry.cn-hangzhou.aliyuncs.com/<namespace>/<image-name>
 CONTAINER_REGISTRY := registry.cn-hangzhou.aliyuncs.com
 # 命名空间（需要根据实际情况修改）
-CONTAINER_NAMESPACE := your-namespace
+CONTAINER_NAMESPACE := dockerhacker
 # 完整镜像地址
 FULL_IMAGE_NAME := $(CONTAINER_REGISTRY)/$(CONTAINER_NAMESPACE)/$(DOCKER_RUNTIME_IMAGE):$(DOCKER_TAG)
 
@@ -236,8 +236,8 @@ build-image:
 	@echo "=========================================="
 	@echo "检查 Docker 是否可用..."
 	@command -v docker > /dev/null || (echo "错误: Docker 未安装或未启动，请先安装 Docker" && exit 1)
-	@echo "构建 Docker 镜像（多阶段构建，包含编译）..."
-	@docker build -t $(DOCKER_RUNTIME_IMAGE):$(DOCKER_TAG) . || (echo "错误: Docker 镜像构建失败" && exit 1)
+	@echo "构建 Docker 镜像（多阶段构建，包含编译，平台: linux/amd64）..."
+	@docker build --platform linux/amd64 -t $(DOCKER_RUNTIME_IMAGE):$(DOCKER_TAG) . || (echo "错误: Docker 镜像构建失败" && exit 1)
 	@echo ""
 	@echo "✓ Docker 镜像构建成功！"
 	@echo "镜像名称: $(DOCKER_RUNTIME_IMAGE):$(DOCKER_TAG)"
