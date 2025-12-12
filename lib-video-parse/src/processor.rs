@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use image::DynamicImage;
+use tracing::{info, warn, error, debug};
 use crate::{VideoProcessor, SceneDetector, AudioExtractor, metadata::VideoMetadata};
 
 /// 视频处理配置
@@ -59,56 +60,77 @@ pub async fn process_video(
     let output_dir = output_dir.as_ref();
 
     let total_start = Instant::now();
-    println!("开始处理视频: {}", input_video_path.display());
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("🎬 [视频处理] 开始处理视频: {}", input_video_path.display());
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     
     // 创建输出目录
     let dir_start = Instant::now();
     std::fs::create_dir_all(output_dir)
         .context("创建输出目录失败")?;
-    println!("[{}ms] ✓ 创建输出目录", dir_start.elapsed().as_millis());
+    let dir_duration = dir_start.elapsed();
+    info!("✅ [视频处理] 创建输出目录完成，耗时: {:.2}秒", dir_duration.as_secs_f64());
 
     // 1. 初始化视频处理器
     let init_start = Instant::now();
-    let processor = VideoProcessor::new(input_video_path)?;
-    println!("[{}ms] ✓ 初始化视频处理器", init_start.elapsed().as_millis());
+    let processor = VideoProcessor::new(input_video_path)
+        .map_err(|e| {
+            error!("❌ [视频处理] 初始化视频处理器失败: {}", e);
+            e
+        })?;
+    let init_duration = init_start.elapsed();
+    info!("✅ [视频处理] 初始化视频处理器完成，耗时: {:.2}秒", init_duration.as_secs_f64());
     
     // 2. 获取视频信息
     let info_start = Instant::now();
-    let (fps, width, height) = processor.get_video_info()?;
-    println!("[{}ms] ✓ 获取视频信息: {}x{}, {:.2} fps", 
-        info_start.elapsed().as_millis(), width, height, fps);
+    let (fps, width, height) = processor.get_video_info()
+        .map_err(|e| {
+            error!("❌ [视频处理] 获取视频信息失败: {}", e);
+            e
+        })?;
+    let info_duration = info_start.elapsed();
+    info!("✅ [视频处理] 获取视频信息完成，耗时: {:.2}秒", info_duration.as_secs_f64());
+    info!("  • 分辨率: {}x{}", width, height);
+    info!("  • 帧率: {:.2} fps", fps);
 
     // 3. 提取视频帧
     let extract_start = Instant::now();
-    println!("⏳ 正在提取视频帧（采样率: {:.1} fps）...", config.sample_rate);
-    let frames = processor.extract_frames(Some(config.sample_rate))?;
+    info!("⏳ [视频处理] 正在提取视频帧（采样率: {:.1} fps）...", config.sample_rate);
+    let frames = processor.extract_frames(Some(config.sample_rate))
+        .map_err(|e| {
+            error!("❌ [视频处理] 提取视频帧失败: {}", e);
+            e
+        })?;
     let extract_duration = extract_start.elapsed();
-    println!("[{}ms] ✓ 提取视频帧完成: {} 帧 (平均 {:.2}ms/帧)", 
-        extract_duration.as_millis(), 
-        frames.len(),
-        if frames.len() > 0 { extract_duration.as_millis() as f64 / frames.len() as f64 } else { 0.0 });
+    let avg_frame_time = if frames.len() > 0 { extract_duration.as_millis() as f64 / frames.len() as f64 } else { 0.0 };
+    info!("✅ [视频处理] 提取视频帧完成，耗时: {:.2}秒", extract_duration.as_secs_f64());
+    info!("  • 提取帧数: {} 帧", frames.len());
+    info!("  • 平均每帧耗时: {:.2}ms", avg_frame_time);
 
     // 4. 检测场景变化
     let scene_start = Instant::now();
-    println!("⏳ 正在检测场景变化...");
+    info!("⏳ [视频处理] 正在检测场景变化...");
     let detector = SceneDetector::new(config.threshold, config.min_scene_duration);
-    let scene_changes = detector.detect_scenes(&frames, fps)?;
+    let scene_changes = detector.detect_scenes(&frames, fps)
+        .map_err(|e| {
+            error!("❌ [视频处理] 场景检测失败: {}", e);
+            e
+        })?;
     let scene_duration = scene_start.elapsed();
-    println!("[{}ms] ✓ 场景检测完成: {} 个场景 (平均 {:.2}ms/场景)", 
-        scene_duration.as_millis(),
-        scene_changes.len(),
-        if scene_changes.len() > 0 { scene_duration.as_millis() as f64 / scene_changes.len() as f64 } else { 0.0 });
+    let avg_scene_time = if scene_changes.len() > 0 { scene_duration.as_millis() as f64 / scene_changes.len() as f64 } else { 0.0 };
+    info!("✅ [视频处理] 场景检测完成，耗时: {:.2}秒", scene_duration.as_secs_f64());
+    info!("  • 检测到场景数: {} 个", scene_changes.len());
+    info!("  • 平均每场景耗时: {:.2}ms", avg_scene_time);
 
     // 5. 提取关键帧并保存
     let keyframe_start = Instant::now();
-    println!("⏳ 正在提取并保存关键帧...");
+    info!("⏳ [视频处理] 正在提取并保存关键帧...");
     let mut scenes_metadata = Vec::new();
     let mut keyframe_files = Vec::new();
     let total_duration = frames.last().map(|(t, _)| *t).unwrap_or(0.0);
     
     // 检查是否有提取的帧
     if frames.is_empty() {
+        error!("❌ [视频处理] 没有提取到任何视频帧，无法提取关键帧");
         anyhow::bail!("没有提取到任何视频帧，无法提取关键帧");
     }
     
@@ -145,7 +167,7 @@ pub async fn process_video(
             let fallback_idx = match fallback_idx {
                 Some(idx) => idx,
                 None => {
-                    println!("⚠️  场景 {}: 没有找到合适的帧，跳过", i);
+                    warn!("⚠️  [视频处理] 场景 {}: 没有找到合适的帧，跳过", i);
                     continue;
                 }
             };
@@ -193,7 +215,7 @@ pub async fn process_video(
                         .map(|(idx, _)| *idx)
                         .unwrap_or_else(|| {
                             // 如果 scene_frames 也为空（理论上不应该发生），使用第一个全局帧
-                            println!("⚠️  场景 {}: 没有找到合适的帧，使用第一个全局帧", i);
+                            warn!("⚠️  [视频处理] 场景 {}: 没有找到合适的帧，使用第一个全局帧", i);
                             0
                         })
                 })
@@ -258,9 +280,14 @@ pub async fn process_video(
         let keyframe_filename = format!("keyframe_{:04}.jpg", keyframe_counter);
         let keyframe_path = output_dir.join(&keyframe_filename);
         keyframe_img.save(&keyframe_path)
-            .context(format!("保存关键帧失败: {}", keyframe_filename))?;
+            .map_err(|e| {
+                error!("❌ [视频处理] 保存关键帧失败: {} - {}", keyframe_filename, e);
+                anyhow::anyhow!("保存关键帧失败: {} - {}", keyframe_filename, e)
+            })?;
         
         keyframe_files.push(keyframe_filename.clone());
+        debug!("💾 [视频处理] 已保存关键帧: {} (场景 {}, 时间: {:.2}s)", 
+            keyframe_filename, i, scene_start);
         
         // 场景元数据
         scenes_metadata.push(crate::metadata::SceneMetadata {
@@ -274,24 +301,33 @@ pub async fn process_video(
         keyframe_counter += 1;
     }
     let keyframe_duration = keyframe_start.elapsed();
-    println!("[{}ms] ✓ 关键帧提取完成: {} 个关键帧 (平均 {:.2}ms/帧)", 
-        keyframe_duration.as_millis(),
-        keyframe_files.len(),
-        if keyframe_files.len() > 0 { keyframe_duration.as_millis() as f64 / keyframe_files.len() as f64 } else { 0.0 });
+    let avg_keyframe_time = if keyframe_files.len() > 0 { keyframe_duration.as_millis() as f64 / keyframe_files.len() as f64 } else { 0.0 };
+    info!("✅ [视频处理] 关键帧提取完成，耗时: {:.2}秒", keyframe_duration.as_secs_f64());
+    info!("  • 提取关键帧数: {} 个", keyframe_files.len());
+    info!("  • 平均每帧耗时: {:.2}ms", avg_keyframe_time);
 
     // 6. 提取音频
     let audio_start = Instant::now();
-    println!("⏳ 正在提取音频...");
+    info!("⏳ [视频处理] 正在提取音频...");
     let audio_filename = "audio.aac";
     let audio_path = output_dir.join(&audio_filename);
-    let audio_extractor = AudioExtractor::new(input_video_path)?;
-    audio_extractor.extract_to_file(&audio_path)?;
+    let audio_extractor = AudioExtractor::new(input_video_path)
+        .map_err(|e| {
+            error!("❌ [视频处理] 创建音频提取器失败: {}", e);
+            e
+        })?;
+    audio_extractor.extract_to_file(&audio_path)
+        .map_err(|e| {
+            error!("❌ [视频处理] 提取音频失败: {}", e);
+            e
+        })?;
     let audio_duration = audio_start.elapsed();
-    println!("[{}ms] ✓ 音频提取完成: {}", audio_duration.as_millis(), audio_path.display());
+    info!("✅ [视频处理] 音频提取完成，耗时: {:.2}秒", audio_duration.as_secs_f64());
+    info!("  • 音频文件: {}", audio_path.display());
 
     // 7. 生成元数据 JSON
     let metadata_start = Instant::now();
-    println!("⏳ 正在生成元数据...");
+    info!("⏳ [视频处理] 正在生成元数据...");
     let metadata = VideoMetadata {
         input_video: input_video_path.to_string_lossy().to_string(),
         total_duration,
@@ -304,39 +340,42 @@ pub async fn process_video(
     
     let metadata_path = output_dir.join("metadata.json");
     let metadata_json = serde_json::to_string_pretty(&metadata)
-        .context("序列化元数据失败")?;
+        .map_err(|e| {
+            error!("❌ [视频处理] 序列化元数据失败: {}", e);
+            anyhow::anyhow!("序列化元数据失败: {}", e)
+        })?;
     std::fs::write(&metadata_path, metadata_json)
-        .context("写入元数据文件失败")?;
+        .map_err(|e| {
+            error!("❌ [视频处理] 写入元数据文件失败: {} - {}", metadata_path.display(), e);
+            anyhow::anyhow!("写入元数据文件失败: {}", e)
+        })?;
     let metadata_duration = metadata_start.elapsed();
-    println!("[{}ms] ✓ 元数据生成完成: {}", metadata_duration.as_millis(), metadata_path.display());
+    info!("✅ [视频处理] 元数据生成完成，耗时: {:.2}秒", metadata_duration.as_secs_f64());
+    info!("  • 元数据文件: {}", metadata_path.display());
     
     // 总结
     let total_duration = total_start.elapsed();
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("🎉 处理完成！总耗时: {:.2}秒 ({:.0}ms)", 
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("🎉 [视频处理] 处理完成！总耗时: {:.2}秒 ({:.0}ms)", 
         total_duration.as_secs_f64(), 
         total_duration.as_millis());
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("📊 性能统计:");
-    println!("   • 视频帧提取: {:.2}秒 ({:.1}%)", 
-        extract_duration.as_secs_f64(),
-        extract_duration.as_secs_f64() / total_duration.as_secs_f64() * 100.0);
-    println!("   • 场景检测: {:.2}秒 ({:.1}%)", 
-        scene_duration.as_secs_f64(),
-        scene_duration.as_secs_f64() / total_duration.as_secs_f64() * 100.0);
-    println!("   • 关键帧提取: {:.2}秒 ({:.1}%)", 
-        keyframe_duration.as_secs_f64(),
-        keyframe_duration.as_secs_f64() / total_duration.as_secs_f64() * 100.0);
-    println!("   • 音频提取: {:.2}秒 ({:.1}%)", 
-        audio_duration.as_secs_f64(),
-        audio_duration.as_secs_f64() / total_duration.as_secs_f64() * 100.0);
-    println!("   • 元数据生成: {:.2}秒 ({:.1}%)", 
-        metadata_duration.as_secs_f64(),
-        metadata_duration.as_secs_f64() / total_duration.as_secs_f64() * 100.0);
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("📁 输出目录: {}", output_dir.display());
-    println!("📸 关键帧数量: {}", metadata.scene_count);
-    println!("🎵 音频文件: {}", audio_filename);
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("📊 [视频处理] 性能统计:");
+    let extract_percent = extract_duration.as_secs_f64() / total_duration.as_secs_f64() * 100.0;
+    let scene_percent = scene_duration.as_secs_f64() / total_duration.as_secs_f64() * 100.0;
+    let keyframe_percent = keyframe_duration.as_secs_f64() / total_duration.as_secs_f64() * 100.0;
+    let audio_percent = audio_duration.as_secs_f64() / total_duration.as_secs_f64() * 100.0;
+    let metadata_percent = metadata_duration.as_secs_f64() / total_duration.as_secs_f64() * 100.0;
+    info!("   • 视频帧提取: {:.2}秒 ({:.1}%)", extract_duration.as_secs_f64(), extract_percent);
+    info!("   • 场景检测: {:.2}秒 ({:.1}%)", scene_duration.as_secs_f64(), scene_percent);
+    info!("   • 关键帧提取: {:.2}秒 ({:.1}%)", keyframe_duration.as_secs_f64(), keyframe_percent);
+    info!("   • 音频提取: {:.2}秒 ({:.1}%)", audio_duration.as_secs_f64(), audio_percent);
+    info!("   • 元数据生成: {:.2}秒 ({:.1}%)", metadata_duration.as_secs_f64(), metadata_percent);
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("📁 [视频处理] 输出目录: {}", output_dir.display());
+    info!("📸 [视频处理] 关键帧数量: {}", metadata.scene_count);
+    info!("🎵 [视频处理] 音频文件: {}", audio_filename);
+    info!("✅ [视频处理] 视频处理成功完成");
 
     let result = ProcessOutput {
         output_dir: output_dir.to_path_buf(),
@@ -347,10 +386,11 @@ pub async fn process_video(
 
     // 调用 webhook 回调（如果配置了）
     if let Some(webhook_url) = &config.webhook_url {
+        info!("⏳ [视频处理] 正在调用 Webhook 回调...");
         if let Err(e) = call_webhook(webhook_url, &result, &metadata).await {
-            tracing::warn!("Webhook 回调失败: {}", e);
+            warn!("⚠️  [视频处理] Webhook 回调失败: {}", e);
         } else {
-            println!("✓ Webhook 回调成功");
+            info!("✅ [视频处理] Webhook 回调成功");
         }
     }
 

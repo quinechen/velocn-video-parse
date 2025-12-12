@@ -1,4 +1,46 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde::de::{self, Visitor};
+
+/// 默认空字符串（用于 serde default）
+fn default_empty_string() -> String {
+    String::new()
+}
+
+/// 自定义反序列化器：ownerIdentity 可以是字符串或对象
+fn deserialize_owner_identity<'de, D>(deserializer: D) -> Result<UserIdentity, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct OwnerIdentityVisitor;
+
+    impl<'de> Visitor<'de> for OwnerIdentityVisitor {
+        type Value = UserIdentity;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("string or object")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            // 如果是字符串，直接作为 principal_id
+            Ok(UserIdentity {
+                principal_id: value.to_string(),
+            })
+        }
+
+        fn visit_map<M>(self, map: M) -> Result<Self::Value, M::Error>
+        where
+            M: de::MapAccess<'de>,
+        {
+            // 如果是对象，正常反序列化
+            UserIdentity::deserialize(de::value::MapAccessDeserializer::new(map))
+        }
+    }
+
+    deserializer.deserialize_any(OwnerIdentityVisitor)
+}
 
 /// 阿里云 OSS Event 数据结构
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,13 +121,22 @@ pub struct BucketInfo {
     #[serde(rename = "name")]
     pub name: String,
     
-    /// 拥有者身份
-    #[serde(rename = "ownerIdentity")]
+    /// 拥有者身份（可以是字符串或对象）
+    #[serde(rename = "ownerIdentity", deserialize_with = "deserialize_owner_identity")]
     pub owner_identity: UserIdentity,
     
-    /// 虚拟主机名
-    #[serde(rename = "virtualHostedBucketName")]
+    /// 虚拟主机名（兼容两种字段名，可选）
+    #[serde(rename = "virtualBucket", default = "default_empty_string")]
+    #[serde(alias = "virtualHostedBucketName")]
     pub virtual_hosted_bucket_name: String,
+}
+
+/// 对象元数据
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ObjectMeta {
+    /// MIME 类型
+    #[serde(rename = "mimeType")]
+    pub mime_type: Option<String>,
 }
 
 /// 对象信息
@@ -102,6 +153,10 @@ pub struct ObjectInfo {
     /// 键（文件路径）
     #[serde(rename = "key")]
     pub key: String,
+    
+    /// 对象元数据（可选）
+    #[serde(rename = "objectMeta", default)]
+    pub object_meta: Option<ObjectMeta>,
     
     /// 大小
     #[serde(rename = "size")]

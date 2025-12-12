@@ -24,6 +24,7 @@ resources:
       region: ${vars.region} 
       functionName: "velocn-video-parse-function"
       runtime: "custom-container"
+      logConfig: "auto"
       role: AliyunFcDefaultRole
       internetAccess: true
       description: 'video-parse task'

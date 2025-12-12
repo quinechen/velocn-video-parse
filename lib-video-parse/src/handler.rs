@@ -6,7 +6,7 @@ use axum::{
 };
 use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
-use crate::{OssEvent, ProcessResponse, ProcessResult, OssClient, ProcessConfig, process_video, config::ConfigLoader};
+use crate::{OssEvent, ProcessResponse, ProcessResult, OssClient, ProcessConfig, process_video, config::ConfigLoader, ExtendedConfig};
 use tracing::{info, error, warn, debug};
 
 /// 处理 OSS Event 的 Handler（接受任何HTTP方法）
@@ -92,11 +92,20 @@ async fn handle_oss_event_internal(
     }
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    // DEBUG 模式：如果设置了 DEBUG=true，直接返回成功，用于测试部署和事件触发
-    if std::env::var("DEBUG")
-        .unwrap_or_else(|_| "false".to_string())
-        .to_lowercase() == "true"
-    {
+    // 加载扩展配置
+    let extended_config = ConfigLoader::load_extended_config(None)
+        .unwrap_or_else(|_| ExtendedConfig {
+            process: ProcessConfig::default(),
+            debug_mode: false,
+            output_path: None,
+            destination_bucket: None,
+            destination_region: None,
+            destination_prefix: None,
+            log_level: "info".to_string(),
+        });
+
+    // DEBUG 模式：如果设置了 DEBUG=true 或配置文件中启用了，直接返回成功，用于测试部署和事件触发
+    if extended_config.debug_mode {
         info!("DEBUG 模式已启用，跳过实际处理，直接返回成功");
         
         // 提取事件信息用于日志
@@ -173,7 +182,19 @@ async fn handle_oss_event_internal(
     
     let process_start_time = std::time::Instant::now();
 
-    // 创建临时目录
+    // 加载扩展配置
+    let extended_config = ConfigLoader::load_extended_config(None)
+        .unwrap_or_else(|_| ExtendedConfig {
+            process: ProcessConfig::default(),
+            debug_mode: false,
+            output_path: None,
+            destination_bucket: None,
+            destination_region: None,
+            destination_prefix: None,
+            log_level: "info".to_string(),
+        });
+
+    // 创建临时目录或使用配置的输出路径
     // 尝试使用函数计算的 request_id（优先使用传入的参数，其次环境变量，最后生成）
     let request_id = request_id
         .or_else(|| std::env::var("FC_REQUEST_ID").ok())
@@ -187,7 +208,13 @@ async fn handle_oss_event_internal(
             )
         });
     info!("📁 [视频处理] 创建临时目录 RequestId: {}", request_id);
-    let temp_dir = std::env::temp_dir().join("video-parse").join(&request_id);
+    
+    // 使用配置的输出路径，如果没有则使用临时目录
+    let temp_dir = if let Some(ref output_path) = extended_config.output_path {
+        output_path.join(&request_id)
+    } else {
+        std::env::temp_dir().join("video-parse").join(&request_id)
+    };
     std::fs::create_dir_all(&temp_dir)
         .map_err(|e| {
             error!("❌ [视频处理] 创建临时目录失败: {} (路径: {})", e, temp_dir.display());
@@ -254,10 +281,9 @@ async fn handle_oss_event_internal(
         })?;
     info!("✅ [视频处理] 输出目录创建成功: {}", output_dir.display());
     
-    // 处理视频：从环境变量和配置文件加载配置
-    info!("⚙️  [视频处理] 加载处理配置...");
-    let config = ConfigLoader::load_config(None, None, None, None, None)
-        .unwrap_or_else(|_| ProcessConfig::default());
+    // 使用扩展配置中的处理配置
+    info!("⚙️  [视频处理] 使用处理配置...");
+    let config = extended_config.process.clone();
     info!("📋 [视频处理] 处理配置:");
     info!("  • 场景检测阈值: {:.2}", config.threshold);
     info!("  • 最小场景持续时间: {:.2}秒", config.min_scene_duration);
@@ -282,8 +308,8 @@ async fn handle_oss_event_internal(
 
     // 上传处理结果到目标 bucket（如果配置了目标 bucket）
     let (uploaded_files, upload_duration) = if let (Some(dest_bucket), Some(dest_region)) = (
-        std::env::var("DESTINATION_BUCKET").ok(),
-        std::env::var("DESTINATION_REGION").ok(),
+        extended_config.destination_bucket.clone(),
+        extended_config.destination_region.clone(),
     ) {
         info!("⬆️  [视频处理] 开始上传处理结果到目标 bucket");
         info!("  • 目标 Bucket: {}", dest_bucket);
@@ -294,8 +320,8 @@ async fn handle_oss_event_internal(
         let dest_endpoint = format!("oss-{}-internal.aliyuncs.com", dest_region);
         
         // 构建目标路径前缀（保持源文件的目录结构）
-        let dest_prefix = std::env::var("DESTINATION_PREFIX")
-            .unwrap_or_else(|_| {
+        let dest_prefix = extended_config.destination_prefix.clone()
+            .unwrap_or_else(|| {
                 // 默认使用源文件的目录部分作为前缀
                 PathBuf::from(&object_key)
                     .parent()
@@ -918,12 +944,17 @@ pub async fn handle_invoke(
                     let object_key_clone = object_key.to_string();
                     
                     tokio::spawn(async move {
-                        info!("🚀 [异步任务] 开始处理视频: bucket={}, key={}", bucket_clone, object_key_clone);
+                        info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                        info!("🚀 [异步任务] 开始处理视频 RequestId: {}", request_id_clone);
+                        info!("  • Bucket: {}", bucket_clone);
+                        info!("  • Object Key: {}", object_key_clone);
+                        info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                         let start_time = std::time::Instant::now();
                         
                         match handle_oss_event_internal(event_clone, Some(request_id_clone.clone())).await {
                             Ok(response) => {
                                 let duration = start_time.elapsed();
+                                info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                                 info!("✅ [异步任务] 视频处理成功完成 RequestId: {}", request_id_clone);
                                 info!("⏱️  [异步任务] 总耗时: {:.2}秒", duration.as_secs_f64());
                                 if let Some(ref result) = response.0.result {
@@ -931,12 +962,20 @@ pub async fn handle_invoke(
                                     info!("  • 场景数: {}", result.scene_count);
                                     info!("  • 关键帧数: {}", result.keyframes.len());
                                     info!("  • 音频文件: {}", result.audio_file);
+                                    info!("  • 输出目录: {}", result.output_dir);
                                 }
+                                info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                             }
-                            Err(e) => {
+                            Err((status_code, error_msg)) => {
                                 let duration = start_time.elapsed();
-                                error!("❌ [异步任务] 处理 OSS 事件失败 RequestId: {}, 耗时: {:.2}秒, 错误: {:?}", 
-                                    request_id_clone, duration.as_secs_f64(), e);
+                                error!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                                error!("❌ [异步任务] 处理 OSS 事件失败 RequestId: {}", request_id_clone);
+                                error!("  • 耗时: {:.2}秒", duration.as_secs_f64());
+                                error!("  • HTTP状态码: {}", status_code);
+                                error!("  • 错误信息: {}", error_msg);
+                                error!("  • Bucket: {}", bucket_clone);
+                                error!("  • Object Key: {}", object_key_clone);
+                                error!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                             }
                         }
                     });
@@ -947,8 +986,25 @@ pub async fn handle_invoke(
                 }
             }
             Err(e) => {
-                debug!("请求体不是有效的 OSS 事件 JSON: {}", e);
-                info!("请求体内容（非JSON）: {}", body_str);
+                error!("❌ [OSS Event] JSON 解析失败: {}", e);
+                error!("  • 错误详情: {:?}", e);
+                info!("  • 请求体内容: {}", body_str);
+                // 尝试手动解析关键信息
+                if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&body_str) {
+                    if let Some(events) = json_value.get("events").and_then(|v| v.as_array()) {
+                        if let Some(event) = events.first() {
+                            if let (Some(bucket), Some(object_key)) = (
+                                event.get("oss").and_then(|o| o.get("bucket")).and_then(|b| b.get("name")).and_then(|n| n.as_str()),
+                                event.get("oss").and_then(|o| o.get("object")).and_then(|obj| obj.get("key")).and_then(|k| k.as_str()),
+                            ) {
+                                warn!("⚠️  [OSS Event] 检测到可能的视频文件，但 JSON 解析失败");
+                                warn!("  • Bucket: {}", bucket);
+                                warn!("  • Object Key: {}", object_key);
+                                warn!("  • 建议：检查 OSS 事件结构定义是否与阿里云实际返回的格式匹配");
+                            }
+                        }
+                    }
+                }
             }
         }
     } else {

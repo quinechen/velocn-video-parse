@@ -84,6 +84,11 @@ COPY --from=builder /workspace/target/release/video-parse /code/main
 # 确保二进制文件有执行权限
 RUN chmod +x /code/main
 
+# 复制配置文件到容器内的 /code 目录
+# 注意：配置文件应该在构建时已经存在于项目根目录（由 Makefile 的 prepare-config 目标处理）
+# 如果文件不存在，构建会失败，请确保运行 make deploy 或 make build-image（会自动准备配置文件）
+COPY video-parse.ini /code/video-parse.ini
+
 # 设置环境变量
 # FC_SERVER_PORT: 函数计算环境变量，如果未设置则使用默认值 9000
 ENV FC_SERVER_PORT=9000

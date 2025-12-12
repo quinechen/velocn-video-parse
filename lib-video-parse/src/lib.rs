@@ -15,3 +15,4 @@ pub use metadata::{SceneMetadata, VideoMetadata};
 pub use oss_event::{OssEvent, OssEventItem, ProcessResponse, ProcessResult};
 pub use oss_client::OssClient;
 pub use processor::{ProcessConfig, ProcessOutput, process_video};
+pub use config::{ConfigLoader, ExtendedConfig};

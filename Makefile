@@ -227,9 +227,28 @@ test:
 	@echo ""
 	@echo "✓ 测试完成"
 
+# 准备配置文件（内部任务，由 build-image 和 deploy 调用）
+prepare-config:
+	@if [ -f "video-parse.ini" ]; then \
+		echo "✓ 使用项目根目录的配置文件: video-parse.ini"; \
+	elif [ -f "lib-video-parse/video-parse.ini" ]; then \
+		echo "✓ 找到 lib-video-parse 目录的配置文件，复制到项目根目录..."; \
+		cp lib-video-parse/video-parse.ini video-parse.ini; \
+		echo "✓ 已复制配置文件到项目根目录"; \
+	elif [ -f "lib-video-parse/video-parse.ini.example" ]; then \
+		echo "⚠️  未找到配置文件，从示例文件创建..."; \
+		cp lib-video-parse/video-parse.ini.example video-parse.ini; \
+		echo "✓ 已从示例文件创建配置文件: video-parse.ini"; \
+		echo "  提示: 请根据需要修改配置文件"; \
+	else \
+		echo "错误: 未找到配置文件或示例文件"; \
+		echo "请确保 lib-video-parse/video-parse.ini.example 存在"; \
+		exit 1; \
+	fi
+
 # 构建 Docker 镜像（多阶段构建，包含编译步骤）
 # 支持本地运行和云上部署
-build-image:
+build-image: prepare-config
 	@echo "=========================================="
 	@echo "构建 Docker 镜像（多阶段构建）"
 	@echo "支持本地运行和云上部署"
@@ -275,26 +294,30 @@ deploy:
 	@echo "一键部署到阿里云函数计算"
 	@echo "=========================================="
 	@echo ""
-	@echo "步骤 1/3: 检查环境..."
+	@echo "步骤 1/4: 检查环境..."
 	@command -v docker > /dev/null || (echo "错误: Docker 未安装或未启动，请先安装 Docker" && exit 1)
 	@echo "✓ Docker 已安装"
 	@command -v s > /dev/null || (echo "错误: Serverless Devs CLI 未安装，请先安装: npm install -g @serverless-devs/s" && exit 1)
 	@echo "✓ Serverless Devs CLI 已安装"
 	@echo ""
-	@echo "步骤 2/3: 构建并推送 Docker 镜像..."
+	@echo "步骤 2/4: 准备配置文件..."
+	@$(MAKE) prepare-config
+	@echo ""
+	@echo "步骤 3/4: 构建并推送 Docker 镜像..."
 	@echo "构建 Docker 镜像..."
 	@$(MAKE) build-image || (echo "错误: Docker 镜像构建失败" && exit 1)
 	@echo ""
 	@echo "推送镜像到容器镜像服务..."
 	@$(MAKE) push-image || (echo "错误: 镜像推送失败" && exit 1)
 	@echo ""
-	@echo "步骤 3/3: 部署函数..."
+	@echo "步骤 4/4: 部署函数..."
 	@s deploy -y || (echo "错误: 函数部署失败" && exit 1)
 	@echo ""
 	@echo "=========================================="
 	@echo "✓ 部署完成！"
 	@echo "=========================================="
 	@echo ""
+	@echo "提示: 配置文件已复制到容器内的 /code/video-parse.ini"
 	@echo "提示: 可以使用以下命令查看函数信息:"
 	@echo "  s info"
 	@echo ""

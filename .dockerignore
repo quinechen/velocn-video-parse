@@ -11,3 +11,6 @@ layers/
 .idea/
 *.swp
 *.swo
+
+# 注意：video-parse.ini 不应该被忽略，需要复制到容器中
+# !video-parse.ini
