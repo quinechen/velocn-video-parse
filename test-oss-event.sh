@@ -1,24 +1,29 @@
 #!/bin/bash
 
+set -e
 # ============================================
 # OSS 事件测试脚本
 # ============================================
 # 功能：
-#   1. 构建或运行 Docker 镜像
+#   1. 查找运行中的容器
 #   2. 构造 OSS Event JSON
 #   3. 发送请求到 /invoke 端点
-#   4. 支持通过环境变量注入 STS token
+#   4. 显示处理日志
 #
 # 使用方法：
 #   ./test-oss-event.sh --bucket my-bucket --key path/to/video.mp4 --region cn-hangzhou
 #
 # 环境变量：
-#   ALIBABA_CLOUD_ACCESS_KEY_ID      - 阿里云 Access Key ID
-#   ALIBABA_CLOUD_ACCESS_KEY_SECRET  - 阿里云 Access Key Secret
-#   ALIBABA_CLOUD_SECURITY_TOKEN     - STS Security Token（可选）
-#   DOCKER_IMAGE_NAME                 - Docker 镜像名称（默认：video-parse:latest）
 #   DOCKER_PORT                       - Docker 端口映射（默认：9000:9000）
+#   CONTAINER_NAME                    - 容器名称（如果指定，将使用该容器；否则自动查找）
 #   FC_REQUEST_ID                     - 请求ID（默认：自动生成）
+#
+# 注意：容器管理已迁移到 Makefile，使用以下命令：
+#   make container-build              # 构建镜像
+#   make container-run                # 启动容器
+#   make container-stop               # 停止容器
+#   make container-cleanup            # 清理容器和镜像
+#   make container-logs               # 查看容器日志
 # ============================================
 
 set -e
@@ -31,9 +36,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # 默认配置
-DOCKER_IMAGE_NAME="${DOCKER_IMAGE_NAME:-video-parse:latest}"
 DOCKER_PORT="${DOCKER_PORT:-9000:9000}"
-CONTAINER_NAME="video-parse-test-$(date +%s)"
 FC_REQUEST_ID="${FC_REQUEST_ID:-$(uuidgen 2>/dev/null || echo "test-$(date +%s)")}"
 
 # 解析命令行参数
@@ -41,10 +44,7 @@ BUCKET=""
 OBJECT_KEY=""
 REGION=""
 EVENT_NAME="ObjectCreated:Put"
-BUILD_IMAGE=false
-RUN_CONTAINER=false
-STOP_CONTAINER=false
-CLEANUP=false
+CONTAINER_NAME=""
 
 # 显示帮助信息
 show_help() {
@@ -56,34 +56,27 @@ show_help() {
   -k, --key KEY                  OSS Object Key（文件路径，必需）
   -r, --region REGION            OSS Region（必需，例如：cn-hangzhou）
   -e, --event EVENT_NAME         事件名称（默认：ObjectCreated:Put）
-  -i, --image IMAGE_NAME         Docker 镜像名称（默认：video-parse:latest）
-  -p, --port PORT                端口映射（默认：9000:9000）
-  --build                        构建 Docker 镜像
-  --run                          运行 Docker 容器（后台）
-  --stop                         停止并删除容器
-  --cleanup                      清理容器和镜像
+  -c, --container CONTAINER_NAME 容器名称（可选，默认自动查找）
   -h, --help                     显示此帮助信息
 
 环境变量:
-  ALIBABA_CLOUD_ACCESS_KEY_ID     阿里云 Access Key ID（必需）
-  ALIBABA_CLOUD_ACCESS_KEY_SECRET 阿里云 Access Key Secret（必需）
-  ALIBABA_CLOUD_SECURITY_TOKEN    STS Security Token（可选）
+  DOCKER_PORT                    端口映射（默认：9000:9000）
+  CONTAINER_NAME                 容器名称（如果设置，将使用该容器）
+  FC_REQUEST_ID                  请求ID（默认：自动生成）
+
+容器管理（使用 Makefile）:
+  make container-build            构建 Docker 镜像
+  make container-run              启动容器（需要设置 ALIBABA_CLOUD_ACCESS_KEY_ID 和 ALIBABA_CLOUD_ACCESS_KEY_SECRET）
+  make container-stop             停止并删除容器
+  make container-cleanup          清理容器和镜像
+  make container-logs             查看容器实时日志
 
 示例:
-  # 构建镜像
-  $0 --build
-
-  # 运行容器并发送测试事件
-  $0 --run --bucket my-bucket --key videos/test.mp4 --region cn-hangzhou
-
-  # 仅发送测试事件（容器已运行）
+  # 发送测试事件（自动查找容器）
   $0 --bucket my-bucket --key videos/test.mp4 --region cn-hangzhou
 
-  # 停止容器
-  $0 --stop
-
-  # 清理所有资源
-  $0 --cleanup
+  # 指定容器名称
+  $0 --bucket my-bucket --key videos/test.mp4 --region cn-hangzhou --container video-parse-test-1234567890
 EOF
 }
 
@@ -106,29 +99,9 @@ while [[ $# -gt 0 ]]; do
             EVENT_NAME="$2"
             shift 2
             ;;
-        -i|--image)
-            DOCKER_IMAGE_NAME="$2"
+        -c|--container)
+            CONTAINER_NAME="$2"
             shift 2
-            ;;
-        -p|--port)
-            DOCKER_PORT="$2"
-            shift 2
-            ;;
-        --build)
-            BUILD_IMAGE=true
-            shift
-            ;;
-        --run)
-            RUN_CONTAINER=true
-            shift
-            ;;
-        --stop)
-            STOP_CONTAINER=true
-            shift
-            ;;
-        --cleanup)
-            CLEANUP=true
-            shift
             ;;
         -h|--help)
             show_help
@@ -142,166 +115,47 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# 清理函数
-cleanup() {
-    echo -e "${YELLOW}正在清理...${NC}"
-    
-    # 停止并删除所有匹配的容器（因为容器名是动态生成的）
-    local containers=$(docker ps -a --format '{{.Names}}' | grep "^video-parse-test-" || true)
-    if [[ -n "$containers" ]]; then
-        echo "$containers" | while read -r container; do
-            echo -e "${BLUE}停止并删除容器: ${container}${NC}"
-            docker stop "${container}" >/dev/null 2>&1 || true
-            docker rm "${container}" >/dev/null 2>&1 || true
-        done
-    fi
-    
-    # 如果指定了容器名，也尝试清理
+# 查找运行中的容器
+find_container() {
+    # 如果指定了容器名，直接使用
     if [[ -n "${CONTAINER_NAME}" ]]; then
-        if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-            echo -e "${BLUE}停止容器: ${CONTAINER_NAME}${NC}"
-            docker stop "${CONTAINER_NAME}" >/dev/null 2>&1 || true
-            docker rm "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+        if docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+            echo "${CONTAINER_NAME}"
+            return 0
+        else
+            echo -e "${RED}错误: 指定的容器 ${CONTAINER_NAME} 未运行${NC}"
+            return 1
         fi
     fi
     
-    # 删除镜像（可选）
-    if [[ "$CLEANUP" == true ]]; then
-        if docker images --format '{{.Repository}}:{{.Tag}}' | grep -q "^${DOCKER_IMAGE_NAME}$"; then
-            echo -e "${BLUE}删除镜像: ${DOCKER_IMAGE_NAME}${NC}"
-            docker rmi "${DOCKER_IMAGE_NAME}" >/dev/null 2>&1 || true
-        fi
+    # 自动查找运行中的容器
+    local containers=$(docker ps --format '{{.Names}}' | grep "^video-parse-test-" || true)
+    
+    if [[ -z "${containers}" ]]; then
+        echo -e "${RED}错误: 未找到运行中的容器${NC}"
+        echo -e "${YELLOW}请先启动容器:${NC}"
+        echo -e "  make container-run"
+        return 1
     fi
     
-    echo -e "${GREEN}清理完成${NC}"
-}
-
-# 停止容器
-stop_container() {
-    # 查找所有匹配的容器
-    local containers=$(docker ps -a --format '{{.Names}}' | grep "^video-parse-test-" || true)
+    # 如果找到多个容器，使用第一个
+    local first_container=$(echo "${containers}" | head -n1)
     
-    if [[ -n "$containers" ]]; then
-        echo "$containers" | while read -r container; do
-            echo -e "${BLUE}停止并删除容器: ${container}${NC}"
-            docker stop "${container}" 2>/dev/null || true
-            docker rm "${container}" 2>/dev/null || true
-        done
-        echo -e "${GREEN}所有测试容器已停止并删除${NC}"
-    else
-        echo -e "${YELLOW}未找到运行中的测试容器${NC}"
-    fi
-    exit 0
-}
-
-# 构建 Docker 镜像
-build_image() {
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BLUE}构建 Docker 镜像: ${DOCKER_IMAGE_NAME}${NC}"
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    
-    # 检查 Dockerfile 是否存在
-    if [[ ! -f "Dockerfile" ]]; then
-        echo -e "${RED}错误: 未找到 Dockerfile${NC}"
-        exit 1
+    # 如果只有一个容器，直接返回
+    local container_count=$(echo "${containers}" | wc -l | tr -d ' ')
+    if [[ $container_count -eq 1 ]]; then
+        echo "${first_container}"
+        return 0
     fi
     
-    docker build -t "${DOCKER_IMAGE_NAME}" .
-    
-    echo -e "${GREEN}镜像构建完成: ${DOCKER_IMAGE_NAME}${NC}"
-}
-
-# 运行 Docker 容器
-run_container() {
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BLUE}运行 Docker 容器${NC}"
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    
-    # 检查镜像是否存在
-    if ! docker images --format '{{.Repository}}:{{.Tag}}' | grep -q "^${DOCKER_IMAGE_NAME}$"; then
-        echo -e "${YELLOW}镜像 ${DOCKER_IMAGE_NAME} 不存在，正在构建...${NC}"
-        build_image
-    fi
-    
-    # 检查容器是否已运行
-    if docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-        echo -e "${YELLOW}容器 ${CONTAINER_NAME} 已在运行${NC}"
-        return
-    fi
-    
-    # 检查必需的环境变量
-    if [[ -z "${ALIBABA_CLOUD_ACCESS_KEY_ID}" ]]; then
-        echo -e "${RED}错误: 未设置 ALIBABA_CLOUD_ACCESS_KEY_ID 环境变量${NC}"
-        exit 1
-    fi
-    
-    if [[ -z "${ALIBABA_CLOUD_ACCESS_KEY_SECRET}" ]]; then
-        echo -e "${RED}错误: 未设置 ALIBABA_CLOUD_ACCESS_KEY_SECRET 环境变量${NC}"
-        exit 1
-    fi
-    
-    # 构建环境变量参数
-    ENV_ARGS=(
-        -e "ALIBABA_CLOUD_ACCESS_KEY_ID=${ALIBABA_CLOUD_ACCESS_KEY_ID}"
-        -e "ALIBABA_CLOUD_ACCESS_KEY_SECRET=${ALIBABA_CLOUD_ACCESS_KEY_SECRET}"
-    )
-    
-    # 如果提供了 STS token，添加到环境变量
-    if [[ -n "${ALIBABA_CLOUD_SECURITY_TOKEN}" ]]; then
-        ENV_ARGS+=(-e "ALIBABA_CLOUD_SECURITY_TOKEN=${ALIBABA_CLOUD_SECURITY_TOKEN}")
-        echo -e "${GREEN}✓ 已配置 STS Token${NC}"
-    fi
-    
-    # 运行容器
-    echo -e "${BLUE}启动容器: ${CONTAINER_NAME}${NC}"
-    echo -e "${BLUE}端口映射: ${DOCKER_PORT}${NC}"
-    
-    docker run -d \
-        --name "${CONTAINER_NAME}" \
-        -p "${DOCKER_PORT}" \
-        "${ENV_ARGS[@]}" \
-        "${DOCKER_IMAGE_NAME}"
-    
-    # 等待容器启动并检查健康状态
-    echo -e "${YELLOW}等待容器启动...${NC}"
-    local max_attempts=30
-    local attempt=0
-    local host_port=$(docker port "${CONTAINER_NAME}" 9000/tcp 2>/dev/null | cut -d: -f2)
-    
-    while [[ $attempt -lt $max_attempts ]]; do
-        sleep 1
-        attempt=$((attempt + 1))
-        
-        # 检查容器是否运行
-        if ! docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-            echo -e "${RED}✗ 容器启动失败${NC}"
-            docker logs "${CONTAINER_NAME}" 2>&1 | tail -20
-            exit 1
-        fi
-        
-        # 检查健康端点（如果端口可用）
-        if [[ -n "${host_port}" ]]; then
-            if curl -s -f "http://localhost:${host_port}/health" >/dev/null 2>&1; then
-                echo -e "${GREEN}✓ 容器健康检查通过${NC}"
-                break
-            fi
-        fi
-        
-        if [[ $attempt -eq $max_attempts ]]; then
-            echo -e "${YELLOW}⚠ 健康检查超时，但容器已启动${NC}"
-        fi
-    done
-    
-    # 检查容器状态
-    if docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-        echo -e "${GREEN}✓ 容器已启动: ${CONTAINER_NAME}${NC}"
-        echo -e "${BLUE}容器日志:${NC}"
-        docker logs "${CONTAINER_NAME}" | tail -10
-    else
-        echo -e "${RED}✗ 容器启动失败${NC}"
-        docker logs "${CONTAINER_NAME}" 2>&1 | tail -20
-        exit 1
-    fi
+    # 多个容器，提示用户选择
+    echo -e "${YELLOW}找到多个运行中的容器:${NC}"
+    echo "${containers}" | nl -w2 -s'. '
+    echo ""
+    echo -e "${YELLOW}使用第一个容器: ${first_container}${NC}"
+    echo -e "${YELLOW}提示: 使用 --container 参数指定容器名称${NC}"
+    echo "${first_container}"
+    return 0
 }
 
 # 生成 OSS Event JSON
@@ -377,11 +231,15 @@ send_request() {
     echo -e "${BLUE}发送 OSS Event 到 /invoke 端点${NC}"
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     
-    # 检查容器是否运行
-    if ! docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-        echo -e "${YELLOW}容器未运行，正在启动...${NC}"
-        run_container
+    # 查找运行中的容器
+    local container=$(find_container)
+    if [[ $? -ne 0 ]]; then
+        exit 1
     fi
+    
+    CONTAINER_NAME="${container}"
+    echo -e "${GREEN}✓ 使用容器: ${CONTAINER_NAME}${NC}"
+    echo ""
     
     # 生成 OSS Event JSON
     local event_json=$(generate_oss_event "${bucket}" "${object_key}" "${region}" "${event_name}")
@@ -401,19 +259,45 @@ send_request() {
     echo "..."
     echo ""
     
-    # 获取容器端口
-    local host_port=$(docker port "${CONTAINER_NAME}" 9000/tcp 2>/dev/null | cut -d: -f2)
+    # 获取容器端口（处理不同的输出格式）
+    # 优先从 DOCKER_PORT 环境变量解析（格式: host_port:container_port）
+    local host_port=""
+    if [[ -n "${DOCKER_PORT}" ]]; then
+        host_port=$(echo "${DOCKER_PORT}" | cut -d: -f1)
+    fi
+    
+    # 如果无法从环境变量获取，尝试从 docker port 命令获取
+    local port_info=""
+    if [[ -z "${host_port}" ]]; then
+        port_info=$(docker port "${CONTAINER_NAME}" 9000/tcp 2>/dev/null | head -n1)
+        if [[ -n "${port_info}" ]]; then
+            # docker port 输出格式: 9000/tcp -> 0.0.0.0:9000 或 9000/tcp -> [::]:9000
+            # 提取端口号（最后一个冒号后的数字）
+            host_port=$(echo "${port_info}" | grep -oE ':[0-9]+$' | cut -d: -f2)
+        fi
+    else
+        # 如果从环境变量获取成功，也获取端口映射详情用于显示
+        port_info=$(docker port "${CONTAINER_NAME}" 9000/tcp 2>/dev/null | head -n1)
+    fi
     
     if [[ -z "${host_port}" ]]; then
         echo -e "${RED}错误: 无法获取容器端口${NC}"
         echo -e "${YELLOW}请检查容器是否正常运行:${NC}"
         docker ps -a | grep "${CONTAINER_NAME}" || echo "容器不存在"
+        echo ""
+        echo -e "${YELLOW}调试信息:${NC}"
+        echo "端口映射信息: ${port_info:-无}"
+        docker port "${CONTAINER_NAME}" 2>&1 || echo "无法获取端口映射"
         exit 1
     fi
     
     local url="http://localhost:${host_port}/invoke"
     
     echo -e "${BLUE}发送 POST 请求到: ${url}${NC}"
+    echo -e "${BLUE}容器端口映射: 9000 -> ${host_port}${NC}"
+    if [[ -n "${port_info}" ]]; then
+        echo -e "${BLUE}端口映射详情: ${port_info}${NC}"
+    fi
     echo ""
     
     # 检查 curl 是否可用
@@ -422,18 +306,76 @@ send_request() {
         exit 1
     fi
     
-    # 发送请求（增加超时设置）
-    local response=$(curl -s -w "\n%{http_code}" \
+    # 先测试连接是否正常（增加重试机制）
+    echo -e "${YELLOW}测试连接（最多重试5次）...${NC}"
+    local connect_success=false
+    for i in {1..5}; do
+        if curl -s -f --max-time 3 "http://localhost:${host_port}/health" >/dev/null 2>&1; then
+            connect_success=true
+            break
+        fi
+        if [[ $i -lt 5 ]]; then
+            echo -e "${YELLOW}  重试 ${i}/5...${NC}"
+            sleep 1
+        fi
+    done
+    
+    if [[ "$connect_success" != "true" ]]; then
+        echo -e "${RED}错误: 无法连接到容器服务${NC}"
+        echo ""
+        echo -e "${YELLOW}诊断信息:${NC}"
+        echo -e "  1. 容器状态:"
+        docker ps -a | grep "${CONTAINER_NAME}" || echo "    容器不存在"
+        echo ""
+        echo -e "  2. 端口映射:"
+        docker port "${CONTAINER_NAME}" 2>&1 || echo "    无法获取端口映射"
+        echo ""
+        echo -e "  3. 容器日志（最后20行）:"
+        docker logs "${CONTAINER_NAME}" --tail 20 2>&1 || echo "    无法获取日志"
+        echo ""
+        echo -e "  4. 手动测试连接:"
+        echo -e "    curl -v http://localhost:${host_port}/health"
+        echo ""
+        exit 1
+    fi
+    echo -e "${GREEN}✓ 连接测试通过${NC}"
+    echo ""
+    
+    # 发送请求（使用临时文件分离响应体和状态码，兼容 macOS）
+    local temp_response=$(mktemp)
+    local temp_code=$(mktemp)
+    local curl_exit_code=0
+    
+    # 发送请求，将响应体保存到文件，状态码单独保存
+    curl -s -w "%{http_code}" \
         --max-time 300 \
         -X POST \
         -H "Content-Type: application/json" \
         -H "x-fc-request-id: ${FC_REQUEST_ID}" \
         -d "${event_json}" \
-        "${url}" 2>&1)
+        -o "${temp_response}" \
+        "${url}" > "${temp_code}" 2>&1 || curl_exit_code=$?
     
-    # 分离响应体和状态码
-    local http_code=$(echo "${response}" | tail -n1)
-    local response_body=$(echo "${response}" | head -n-1)
+    # 读取状态码和响应体
+    local http_code=$(cat "${temp_code}" | tr -d '\n\r' || echo "000")
+    local response_body=$(cat "${temp_response}")
+    
+    # 清理临时文件
+    rm -f "${temp_response}" "${temp_code}"
+    
+    # 如果 curl 失败，http_code 可能是 000
+    if [[ $curl_exit_code -ne 0 ]] || [[ -z "${http_code}" ]] || [[ "${http_code}" == "000" ]]; then
+        echo -e "${RED}⚠ curl 请求可能失败，退出码: ${curl_exit_code}${NC}"
+        if [[ -n "${response_body}" ]]; then
+            echo -e "${YELLOW}响应内容:${NC}"
+            echo "${response_body}"
+        fi
+        echo ""
+        # 如果状态码为空或000，尝试从响应中提取
+        if [[ -z "${http_code}" ]] || [[ "${http_code}" == "000" ]]; then
+            http_code="000"
+        fi
+    fi
     
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${BLUE}响应结果${NC}"
@@ -449,15 +391,27 @@ send_request() {
     fi
     echo ""
     
-    # 显示容器日志（最后20行）
+    # 显示容器日志（最后50行，确保能看到完整的处理日志）
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BLUE}容器日志（最后20行）${NC}"
+    echo -e "${BLUE}容器日志（请求后立即查看，最后50行）${NC}"
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    docker logs "${CONTAINER_NAME}" --tail 20
+    docker logs "${CONTAINER_NAME}" --tail 50
     echo ""
     
+    # 如果是异步处理，等待一段时间让日志输出
     if [[ "${http_code}" == "200" ]]; then
         echo -e "${GREEN}✓ 请求成功${NC}"
+        echo -e "${YELLOW}等待异步任务执行并输出日志（5秒）...${NC}"
+        sleep 5
+        
+        echo ""
+        echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${BLUE}容器日志（等待后，最后100行）${NC}"
+        echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        docker logs "${CONTAINER_NAME}" --tail 100
+        echo ""
+        echo -e "${YELLOW}提示: 使用以下命令实时查看日志:${NC}"
+        echo -e "  docker logs -f ${CONTAINER_NAME}"
     else
         echo -e "${RED}✗ 请求失败 (HTTP ${http_code})${NC}"
         exit 1
@@ -466,28 +420,6 @@ send_request() {
 
 # 主函数
 main() {
-    # 处理清理操作
-    if [[ "$CLEANUP" == true ]]; then
-        cleanup
-        exit 0
-    fi
-    
-    # 处理停止操作
-    if [[ "$STOP_CONTAINER" == true ]]; then
-        stop_container
-    fi
-    
-    # 处理构建操作
-    if [[ "$BUILD_IMAGE" == true ]]; then
-        build_image
-    fi
-    
-    # 处理运行容器操作
-    if [[ "$RUN_CONTAINER" == true ]]; then
-        run_container
-        exit 0
-    fi
-    
     # 发送请求需要参数
     if [[ -z "$BUCKET" ]] || [[ -z "$OBJECT_KEY" ]] || [[ -z "$REGION" ]]; then
         echo -e "${YELLOW}提示: 发送请求需要提供 --bucket, --key, --region 参数${NC}"
@@ -499,13 +431,6 @@ main() {
     # 发送请求
     send_request "${BUCKET}" "${OBJECT_KEY}" "${REGION}" "${EVENT_NAME}"
 }
-
-# 设置退出时清理（仅在非交互模式下）
-# 注意：如果用户手动停止（Ctrl+C），也会触发清理
-# 如果需要保留容器，可以在运行前设置 CLEANUP_ON_EXIT=false
-if [[ "${CLEANUP_ON_EXIT:-true}" == "true" ]]; then
-    trap 'if [[ $? -ne 0 ]] && [[ "$CLEANUP" != true ]] && [[ "$STOP_CONTAINER" != true ]]; then cleanup; fi' EXIT
-fi
 
 # 运行主函数
 main

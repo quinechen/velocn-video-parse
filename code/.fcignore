@@ -1,0 +1,26 @@
+# 测试数据和文件
+testdata/
+*.test
+*_test.go
+run_tests.sh
+
+# 临时文件
+*.tmp
+*.log
+*.swp
+*.swo
+*~
+
+# IDE 文件
+.vscode/
+.idea/
+*.iml
+
+# 构建产物（除了 target/main）
+target/*
+!target/main
+
+# 其他
+.DS_Store
+Thumbs.db
+

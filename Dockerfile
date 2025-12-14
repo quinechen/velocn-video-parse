@@ -99,5 +99,6 @@ ENV FC_SERVER_PORT=9000
 EXPOSE 9000
 
 # 启动命令：运行 serve 子命令
-# 程序会自动从环境变量 FC_SERVER_PORT 读取端口，或使用默认值 9000
-CMD ["/code/main", "serve"]
+# 明确指定绑定地址为 0.0.0.0:9000，确保可以从容器外部访问
+# 如果设置了 FC_SERVER_PORT 环境变量，会使用该端口
+CMD ["/code/main", "serve", "--bind", "0.0.0.0:9000"]

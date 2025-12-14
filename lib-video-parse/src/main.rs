@@ -1,7 +1,8 @@
 use clap::{Parser, Subcommand};
 use anyhow::{Context, Result};
+use std::io::Write;
 use std::path::PathBuf;
-use video_parse::{ProcessConfig, process_video, config::ConfigLoader};
+use video_parse::{process_video, config::ConfigLoader};
 
 /// 视频拉片工具 - 分析视频内容，提取关键帧和场景信息
 #[derive(Parser, Debug)]
@@ -52,12 +53,59 @@ enum Commands {
     },
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    // 初始化日志
-    tracing_subscriber::fmt::init();
+fn main() {
+    // 使用简单的错误处理，避免 anyhow 的复杂性
+    if let Err(e) = try_main() {
+        eprintln!("[Main] Error: {}", e);
+        std::process::exit(1);
+    }
+}
 
+fn try_main() -> Result<()> {
+    // 立即输出，确保程序已启动（在 tokio runtime 之前）
+    eprintln!("[Main] Program starting...");
+    std::io::stderr().flush().ok();
+    
+    // 先解析命令行参数（在 tokio runtime 之前）
+    eprintln!("[Main] Parsing command line arguments...");
+    std::io::stderr().flush().ok();
     let args = Args::parse();
+    eprintln!("[Main] Arguments parsed: {:?}", args.command);
+    std::io::stderr().flush().ok();
+    
+    // 初始化日志（在 tokio runtime 之前）
+    eprintln!("[Main] Initializing logging...");
+    std::io::stderr().flush().ok();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
+        )
+        .with_writer(std::io::stderr)  // 使用 stderr 确保日志立即输出
+        .with_ansi(true)
+        .with_target(false)  // 不显示模块路径，简化输出
+        .init();
+    
+    eprintln!("[Main] Logging initialized");
+    std::io::stderr().flush().ok();
+    
+    // 手动创建 tokio runtime，使用多线程运行时
+    eprintln!("[Main] Creating tokio runtime...");
+    std::io::stderr().flush().ok();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("Failed to create tokio runtime")?;
+    
+    eprintln!("[Main] Tokio runtime created, starting async main...");
+    std::io::stderr().flush().ok();
+    
+    rt.block_on(async_main(args))
+}
+
+async fn async_main(args: Args) -> Result<()> {
+    eprintln!("[Main] async_main started");
+    std::io::stderr().flush().ok();
 
     match args.command {
         Commands::Process {
@@ -88,11 +136,14 @@ async fn main() -> Result<()> {
         Commands::Serve { bind } => {
             // Web 服务模式
             // 优先使用命令行参数，其次使用环境变量 FC_SERVER_PORT，最后使用默认值 9000
+            eprintln!("[Main] Starting web server mode...");
             let bind_addr = bind.unwrap_or_else(|| {
                 std::env::var("FC_SERVER_PORT")
                     .map(|port| format!("0.0.0.0:{}", port))
                     .unwrap_or_else(|_| "0.0.0.0:9000".to_string())
             });
+            eprintln!("[Main] Bind address: {}", bind_addr);
+            eprintln!("[Main] Calling start_web_server...");
             start_web_server(&bind_addr).await?;
         }
     }
@@ -101,65 +152,10 @@ async fn main() -> Result<()> {
 }
 
 async fn start_web_server(bind: &str) -> Result<()> {
-    use axum::{
-        routing::{get, post, put, delete, patch, head, options, MethodRouter},
-        Router,
-    };
-    use tower_http::cors::CorsLayer;
-    use video_parse::handler;
-
-    // 创建接受任何HTTP方法的路由
-    let invoke_route = MethodRouter::new()
-        .get(handler::handle_invoke)
-        .post(handler::handle_invoke)
-        .put(handler::handle_invoke)
-        .delete(handler::handle_invoke)
-        .patch(handler::handle_invoke)
-        .head(handler::handle_invoke)
-        .options(handler::handle_invoke);
+    eprintln!("[Main] start_web_server called with bind: {}", bind);
+    use video_parse::server;
     
-    let process_any_route = MethodRouter::new()
-        .get(handler::handle_oss_event_any)
-        .post(handler::handle_oss_event_any)
-        .put(handler::handle_oss_event_any)
-        .delete(handler::handle_oss_event_any)
-        .patch(handler::handle_oss_event_any)
-        .head(handler::handle_oss_event_any)
-        .options(handler::handle_oss_event_any);
-
-    let app = Router::new()
-        .route("/", get(handler::health_check))
-        .route("/health", get(handler::health_check))
-        // 函数计算初始化端点
-        .route("/initialize", post(handler::handle_initialize))
-        // 函数计算调用端点（接受任何HTTP方法）
-        .route("/invoke", invoke_route)
-        // OSS事件处理端点（函数计算模式，接受任何HTTP方法以兼容不同调用方式）
-        .route("/process", process_any_route)
-        // 直接处理端点（支持本地文件和OSS文件）
-        .route("/process/direct", post(handler::handle_direct_process))
-        // 查询参数处理端点（GET请求，方便测试）
-        .route("/process/query", get(handler::handle_process_query))
-        .layer(CorsLayer::permissive());
-
-    let listener = tokio::net::TcpListener::bind(bind)
-        .await
-        .context(format!("绑定地址失败: {}", bind))?;
-
-    tracing::info!("Web 服务器启动在: http://{}", bind);
-    tracing::info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    tracing::info!("可用端点:");
-    tracing::info!("  • 健康检查: GET  http://{}/health", bind);
-    tracing::info!("  • 函数计算初始化: POST http://{}/initialize", bind);
-    tracing::info!("  • 函数计算调用: ANY http://{}/invoke", bind);
-    tracing::info!("  • OSS事件处理: ANY http://{}/process", bind);
-    tracing::info!("  • 直接处理: POST http://{}/process/direct", bind);
-    tracing::info!("  • 查询处理: GET  http://{}/process/query?input=<path>", bind);
-    tracing::info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-
-    axum::serve(listener, app)
-        .await
-        .context("启动服务器失败")?;
-
-    Ok(())
+    eprintln!("[Main] Calling server::start_server...");
+    // 启动 hyper 服务器
+    server::start_server(bind).await
 }

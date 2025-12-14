@@ -1,7 +1,0 @@
-{
-    "dependencies": {
-      "@alicloud/darabonba-stream": "^0.0.2",
-      "@alicloud/fc20230330": "^4.1.0"
-    }
-  }
-  

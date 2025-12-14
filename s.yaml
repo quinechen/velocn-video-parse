@@ -4,70 +4,112 @@
 #   有问题快来钉钉群问一下吧：33947367
 # ------------------------------------
 edition: 3.0.0
-name: velocn-video-parse-app
+name: video-parse-go-app
 access: default
 
 vars: # 全局变量
   region: "cn-hangzhou"
-  # 容器镜像服务命名空间（需要根据实际情况修改）
-  namespace: "dockerhacker"
   accountId: "1015382456283553"
   bucket: "velocn-video-parse-bucket"
+  serviceName: "velocn-video-parse-service"
 
 resources:
-  velocn-video-parse-function:
+  video-parse-function:
     component: fc3 
-    actions:    
-      pre-${regex('deploy|local')}:
-        - run: make build-image && make push-image
+    actions:       
+      pre-${regex('deploy|local')}: 
+        # 安装 Go 依赖
+        - run: go mod tidy
+          path: ./code
+        # 编译 Go 程序（Linux amd64 架构，禁用 CGO）
+        # 注意：使用 . 编译整个包，而不是只编译 main.go
+        # 编译为 main（customRuntimeConfig 中指定的启动文件）
+        - run: GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o target/main .
+          path: ./code
+        # 确保 main 文件有执行权限
+        - run: chmod +x target/main
+          path: ./code
     props:
-      region: ${vars.region} 
-      functionName: "velocn-video-parse-function"
-      runtime: "custom-container"
+      region: ${vars.region}
+      serviceName: ${vars.serviceName}
+      functionName: "video-parse-function"
+      description: '视频拉片工具（Go版本）：提取关键帧、检测场景变化、生成元数据'
       logConfig: "auto"
-      role: AliyunFcDefaultRole
-      internetAccess: true
-      description: 'video-parse task'
-      timeout: 10
-      memorySize: 2048
-      cpu: 2
-      diskSize: 10240
-      customContainerConfig:
-        image: registry.cn-hangzhou.aliyuncs.com/${vars.namespace}/video-parse:latest
-        port: 9000
+      # 使用 custom.debian10 运行时（因为需要 FFmpeg 支持）
+      runtime: "custom.debian10"
+      code: ./code/target
+      handler: main
+      # Custom Runtime 配置：指定启动命令和端口
+      customRuntimeConfig:
         command:
           - '/code/main'
-          - 'serve'
-      # 配置目标 OSS bucket（处理结果上传的目标）
+        port: 9000
+      role: AliyunFcDefaultRole
+      internetAccess: true
+      # 视频处理需要较大内存和较长超时时间
+      memorySize: 4096  # 4GB
+      timeout: 1800  # 30分钟
+      cpu: 2
+      diskSize: 10240  # 10GB，用于存储临时视频文件
+      # 环境变量配置
       environmentVariables:
-        # DEBUG 模式：设置为 true 时，函数直接返回成功，跳过实际处理
-        # 用于测试事件触发逻辑和部署是否正确
-        DEBUG: "true"
-        # 目标 bucket 名称（必需）
+        # DEBUG 模式：设置为 false 时，函数会实际处理视频
+        # 设置为 true 时，函数直接返回成功，跳过实际处理（用于测试）
+        DEBUG: "false"
+        # 目标 bucket 名称（处理结果上传的目标，必需）
         DESTINATION_BUCKET: "your-destination-bucket"
         # 目标 bucket 所在区域（必需，如：cn-hangzhou）
-        DESTINATION_REGION: "cn-hangzhou"
-        # 目标路径前缀（可选，默认为源文件的目录路径）
-        # DESTINATION_PREFIX: "processed"
-      # 注意：使用容器镜像后，不再需要 layers（FFmpeg 已包含在镜像中）
+        DESTINATION_REGION: ${vars.region}
+        # 目标路径前缀（可选，默认为 processed）
+        DESTINATION_PREFIX: "processed"
+        # OSS endpoint（自动从 region 生成）
+        OSS_ENDPOINT: oss-${vars.region}-internal.aliyuncs.com
+        # 视频处理配置（可选，使用默认值）
+        VIDEO_PARSE_THRESHOLD: "0.35"
+        VIDEO_PARSE_MIN_SCENE_DURATION: "0.8"
+        VIDEO_PARSE_SAMPLE_RATE: "0.5"
+        # 日志级别
+        LOG_LEVEL: "info"
+      # 使用 FFmpeg Layer（必需）
+      # custom.debian10 运行时默认不包含 FFmpeg，需要添加 FFmpeg Layer
+      # 可以通过以下方式之一获取 FFmpeg：
+      # 1. 使用官方 Layer（如果可用）：
+      layers:
+        - acs:fc:${vars.region}:official:layers/FFmpeg6x/versions/1
+      # 2. 创建自定义 Layer（推荐）：
+      #    创建包含 FFmpeg 的自定义 Layer，然后在这里引用
+      #    layers:
+      #      - acs:fc:${vars.region}:${vars.accountId}:layers/ffmpeg-layer/versions/1
+      # 注意：如果不配置 layers，函数会因为找不到 FFmpeg 而失败
       triggers:
-        - triggerName: httpTrigger # 触发器名称
-          triggerType: http # 触发器类型
-          description: 'http trigger'
-          qualifier: LATEST # 触发服务的版本
+        - triggerName: httpTrigger
+          triggerType: http
+          description: 'HTTP 触发器：支持通过 HTTP 请求调用函数'
+          qualifier: LATEST
           triggerConfig:
-            authType: anonymous # 鉴权类型，可选值：anonymous、function
-            disableURLInternet: false # 是否禁用公网访问 URL
-            methods: # HTTP 触发器支持的访问方法，可选值：GET、POST、PUT、DELETE、HEAD
+            authType: anonymous
+            disableURLInternet: false
+            methods:
               - GET
               - POST
+              - PUT
+              - DELETE
+              - HEAD
               - OPTIONS
-        - triggerName: ossTrigger # 触发器名称
-          triggerType: oss # 触发器类型
-          description: 'oss trigger'
+        - triggerName: ossTrigger
+          triggerType: oss
+          description: 'OSS 触发器：当 OSS bucket 中有新视频文件上传时触发'
           sourceArn: acs:oss:${vars.region}:${vars.accountId}:${vars.bucket}
-          qualifier: LATEST # 触发服务的版本
+          qualifier: LATEST
           triggerConfig:
             events:
               - oss:ObjectCreated:PutObject
               - oss:ObjectCreated:PostObject
+              - oss:ObjectCreated:CompleteMultipartUpload
+            # 过滤器配置（可选）
+            # 注意：不能同时使用 prefix 和 suffix，只能使用其中一个
+            # 如果需要过滤，可以取消下面的注释并只使用 prefix 或 suffix 之一
+            # filter:
+            #   key:
+            #     prefix: "videos/"  # 只处理指定前缀的文件
+            #     # suffix: ".mp4"   # 或者只使用后缀过滤（不能与 prefix 同时使用）
